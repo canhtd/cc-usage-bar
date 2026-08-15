@@ -1,6 +1,38 @@
 import Foundation
 import Security
 
+/// The seam the runtime talks to, so a test can substitute a store that never opens the
+/// keychain -- including one that deliberately never answers, which is what proves a
+/// pending keychain dialog no longer stalls the rest of the app.
+///
+/// Every operation is `async`: see `KeychainQueue` for why none of them may run inline.
+protocol ApifyTokenStoring: Sendable {
+    func read() async throws -> String?
+    func save(_ token: String) async throws
+    func delete() async throws
+}
+
+/// Runs every Security.framework call off the main actor, one at a time.
+///
+/// `SecItemCopyMatching` blocks its thread, and it can block for a very long time: an
+/// ad-hoc signed build asks "CCUsageBar wants to use your confidential information" on the
+/// first read after every reinstall, and the call does not return until the user answers.
+/// Called inline on the main actor that froze the whole app -- menu bar, popover, the
+/// Claude refresh and its timeout with it (observed: a six-minute hang).
+///
+/// A dedicated serial queue rather than an actor on purpose: a blocked cooperative-pool
+/// thread is a thread Swift concurrency cannot use for anything else, and this one is
+/// expected to block for as long as a human takes to answer a dialog.
+private enum KeychainQueue {
+    private static let queue = DispatchQueue(label: "com.danny.ccusagebar.keychain")
+
+    static func run<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async { continuation.resume(with: Result { try work() }) }
+        }
+    }
+}
+
 /// The only type in this app that touches Security.framework (safety invariant S2').
 ///
 /// It reads and writes exactly one generic-password item, pinned to this app's own service
@@ -11,7 +43,7 @@ import Security
 /// The token is never logged, never written to Application Support, never put in history
 /// and never shown in the raw-output view. It leaves this type only as an Authorization
 /// header inside `ApifyClient`.
-nonisolated struct ApifyTokenStore {
+nonisolated struct ApifyTokenStore: ApifyTokenStoring {
     /// Service attribute of the app's own item.
     static let defaultService = "com.danny.ccusagebar.apify"
     /// One token for the app, independent of Claude profiles (A1).
@@ -43,7 +75,11 @@ nonisolated struct ApifyTokenStore {
     }
 
     /// The stored token, or `nil` when the user has not set one.
-    func read() throws -> String? {
+    func read() async throws -> String? {
+        try await KeychainQueue.run { try readItem() }
+    }
+
+    private func readItem() throws -> String? {
         var query = identity
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -60,11 +96,13 @@ nonisolated struct ApifyTokenStore {
     }
 
     /// Replaces the stored token. An empty string clears it.
-    func save(_ token: String) throws {
+    func save(_ token: String) async throws {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return try delete() }
+        guard !trimmed.isEmpty else { return try await delete() }
+        try await KeychainQueue.run { try writeItem(Data(trimmed.utf8)) }
+    }
 
-        let data = Data(trimmed.utf8)
+    private func writeItem(_ data: Data) throws {
         let update = [kSecValueData as String: data]
         let updateStatus = SecItemUpdate(identity as CFDictionary, update as CFDictionary)
         if updateStatus == errSecSuccess { return }
@@ -83,33 +121,24 @@ nonisolated struct ApifyTokenStore {
     #if DEBUG
         /// Test-only: writes raw bytes, so the "item exists but is not text" path can be
         /// exercised. Never compiled into a release build.
-        func saveRawForTesting(_ data: Data) throws {
-            try delete()
-            var insert = identity
-            insert[kSecValueData as String] = data
-            insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            let status = SecItemAdd(insert as CFDictionary, nil)
-            guard status == errSecSuccess else { throw StoreError.keychain(status) }
+        func saveRawForTesting(_ data: Data) async throws {
+            try await delete()
+            try await KeychainQueue.run {
+                var insert = identity
+                insert[kSecValueData as String] = data
+                insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+                let status = SecItemAdd(insert as CFDictionary, nil)
+                guard status == errSecSuccess else { throw StoreError.keychain(status) }
+            }
         }
     #endif
 
-    func delete() throws {
-        let status = SecItemDelete(identity as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw StoreError.keychain(status)
-        }
-    }
-
-    /// Whether a token is believed to exist.
-    ///
-    /// A keychain failure answers `true`. Answering `false` would present a locked or
-    /// broken keychain as "you have not set a token yet", which hides the real fault and
-    /// offers the user a fix that cannot work.
-    var hasToken: Bool {
-        do {
-            return try read() != nil
-        } catch {
-            return true
+    func delete() async throws {
+        try await KeychainQueue.run {
+            let status = SecItemDelete(identity as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw StoreError.keychain(status)
+            }
         }
     }
 }

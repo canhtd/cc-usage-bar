@@ -23,11 +23,18 @@ struct ApifyRuntimeTests {
         ApifyTokenStore(service: "com.danny.ccusagebar.apify.test.\(UUID().uuidString)")
     }
 
+    /// Clears the throwaway item. A task rather than an `await`, because `defer` cannot
+    /// await; every store here has a service name of its own, so a late delete can never
+    /// reach anything but the item this test created.
+    private func cleanUp(_ store: ApifyTokenStore) {
+        Task { try? await store.delete() }
+    }
+
     @Test("a disabled module makes no request at all, not even Test connection")
     func disabledModuleMakesNoRequest() async throws {
         let store = makeStore()
-        try store.save("test-token-not-a-real-credential")
-        defer { try? store.delete() }
+        try await store.save("test-token-not-a-real-credential")
+        defer { cleanUp(store) }
 
         let (client, recorder) = ApifyStubProtocol.makeClient()
         let runtime = ApifyRuntime(
@@ -44,8 +51,8 @@ struct ApifyRuntimeTests {
     @Test("enabling with a stored token polls and reports the budget")
     func enabledModulePolls() async throws {
         let store = makeStore()
-        try store.save("test-token-not-a-real-credential")
-        defer { try? store.delete() }
+        try await store.save("test-token-not-a-real-credential")
+        defer { cleanUp(store) }
 
         let (client, recorder) = ApifyStubProtocol.makeClient()
         recorder.enqueue(
@@ -73,15 +80,22 @@ struct ApifyRuntimeTests {
         let runtime = ApifyRuntime(
             preferences: makePreferences(enabled: true), client: client, tokenStore: store)
 
-        #expect(runtime.state == .needsToken)
+        // The keychain read is asynchronous now, so the module starts out waiting.
+        #expect(runtime.state == .waitingForKeychain)
+        #expect(await untilTrue { runtime.state == .needsToken })
         let polled = await runtime.refresh()
         #expect(polled == nil)
         #expect(runtime.state == .needsToken)
+        #expect(runtime.hasToken == false)
         #expect(recorder.count == 0)
     }
 
     @Test("a keychain failure is reported as itself, not as \"you have no token\"")
     func keychainFailureIsDistinct() throws {
+        // Waiting for the keychain is neutral: a clock, not a warning, and no "fix this".
+        #expect(ApifyState.waitingForKeychain.isLoading)
+        #expect(ApifyState.waitingForKeychain.needsSettings == false)
+        #expect(ApifyState.waitingForKeychain != .needsToken)
         // errSecItemNotFound is the only status that means "no token"; everything else has
         // to keep `hasToken` true so the UI offers Remove rather than a setup prompt.
         #expect(ApifyState.keychainUnavailable(errSecInteractionNotAllowed) != .needsToken)
@@ -92,31 +106,36 @@ struct ApifyRuntimeTests {
     }
 
     @Test("a non-UTF8 keychain payload throws instead of reporting an empty slot")
-    func nonUTF8PayloadThrows() throws {
+    func nonUTF8PayloadThrows() async throws {
         let store = makeStore()
-        defer { try? store.delete() }
+        defer { cleanUp(store) }
         // 0xFF is not valid UTF-8 in any position.
-        try store.saveRawForTesting(Data([0xFF, 0xFE, 0xFF]))
-        #expect(throws: ApifyTokenStore.StoreError.invalidData) { _ = try store.read() }
-        #expect(store.hasToken, "an unreadable item must not look like an empty one")
+        try await store.saveRawForTesting(Data([0xFF, 0xFE, 0xFF]))
+        await #expect(throws: ApifyTokenStore.StoreError.invalidData) { try await store.read() }
+
+        let (client, _) = ApifyStubProtocol.makeClient()
+        let runtime = ApifyRuntime(
+            preferences: makePreferences(enabled: true), client: client, tokenStore: store)
+        #expect(await untilTrue { runtime.tokenPresence != nil })
+        #expect(runtime.hasToken, "an unreadable item must not look like an empty one")
+        #expect(runtime.state == .keychainUnavailable(errSecInvalidData))
     }
 
     @Test("the round trip still works, and delete clears it")
-    func tokenRoundTrip() throws {
+    func tokenRoundTrip() async throws {
         let store = makeStore()
-        defer { try? store.delete() }
-        try store.save("  test-token-not-a-real-credential  ")
-        #expect(try store.read() == "test-token-not-a-real-credential")
-        try store.delete()
-        #expect(try store.read() == nil)
-        #expect(store.hasToken == false)
+        defer { cleanUp(store) }
+        try await store.save("  test-token-not-a-real-credential  ")
+        #expect(try await store.read() == "test-token-not-a-real-credential")
+        try await store.delete()
+        #expect(try await store.read() == nil)
     }
 
     @Test("actor-name lookups are capped, so one poll cannot fan out to a request per run")
     func actorNameBudgetIsRespected() async throws {
         let store = makeStore()
-        try store.save("test-token-not-a-real-credential")
-        defer { try? store.delete() }
+        try await store.save("test-token-not-a-real-credential")
+        defer { cleanUp(store) }
 
         let (client, recorder) = ApifyStubProtocol.makeClient()
         recorder.enqueue(.json(#"{"data":{"current":{"monthlyUsageUsd":250},"limits":{"maxMonthlyUsageUsd":500},"monthlyUsageCycle":{"startAt":"2026-08-01T00:00:00.000Z","endAt":"2026-09-01T00:00:00.000Z"}}}"#))

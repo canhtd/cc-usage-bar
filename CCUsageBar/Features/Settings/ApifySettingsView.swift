@@ -61,9 +61,9 @@ struct ApifySettingsView: View {
             }
             if apify.hasToken {
                 Button("Remove token", role: .destructive) {
-                    apify.clearToken()
                     tokenText = ""
                     testResult = nil
+                    Task { await apify.clearToken() }
                 }
             }
         }
@@ -154,17 +154,21 @@ struct ApifySettingsView: View {
         Binding(get: { preferences[keyPath: keyPath] }, set: { preferences[keyPath: keyPath] = $0 })
     }
 
+    /// The keychain write runs off the main actor, so the field stays responsive even if
+    /// macOS decides to ask the user for permission first.
     private func saveToken() {
         let token = tokenText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { return }
-        if let error = apify.saveToken(token) {
-            testResult = .failure(error)
-            return
-        }
-        // Never leave the token sitting in view state once the keychain owns it.
+        // Never leave the token sitting in view state once it is on its way to the keychain.
         tokenText = ""
         testResult = nil
-        model.refreshApify()
+        Task {
+            if let error = await apify.saveToken(token) {
+                testResult = .failure(error)
+                return
+            }
+            model.refreshApify()
+        }
     }
 
     private func testConnection() {

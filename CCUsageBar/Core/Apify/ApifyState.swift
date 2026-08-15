@@ -8,11 +8,16 @@ nonisolated enum ApifyState: Equatable, Sendable {
     /// The keychain could not be read. Distinct from `needsToken` on purpose: the fix is
     /// not "enter a token", and the module should keep retrying.
     case keychainUnavailable(OSStatus)
+    /// The keychain read has been started and has not come back yet. Distinct from
+    /// `loading` because the wait is unbounded: macOS puts up "CCUsageBar wants to use
+    /// your confidential information" and the read returns only once the user answers.
+    /// Neutral on purpose -- the module is waiting, nothing has failed.
+    case waitingForKeychain
     case loading
     case ready
     case failed(ApifyClient.ClientError)
 
-    var isLoading: Bool { self == .loading }
+    var isLoading: Bool { self == .loading || self == .waitingForKeychain }
 
     var message: String? {
         switch self {
@@ -20,6 +25,7 @@ nonisolated enum ApifyState: Equatable, Sendable {
         case .needsToken: return ApifyClient.ClientError.noToken.message
         case .keychainUnavailable(let status):
             return "Keychain unavailable (\(status)) — will retry."
+        case .waitingForKeychain: return "Waiting for Keychain…"
         case .loading: return "Loading Apify usage…"
         case .failed(let error): return error.message
         }

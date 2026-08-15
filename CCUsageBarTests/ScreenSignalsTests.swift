@@ -64,7 +64,33 @@ struct ScreenSignalsTests {
     @Test("Limit messages set the rate-limited state")
     func rateLimited() {
         #expect(ScreenSignals.isRateLimited("You've reached your usage limit"))
+        #expect(ScreenSignals.isRateLimited("Approaching usage limit"))
+        // The ambiguous wording still counts when no bar painted, i.e. when the panel
+        // itself is the error.
+        #expect(ScreenSignals.isRateLimited("Usage data unavailable (rate limited)"))
         #expect(!ScreenSignals.isRateLimited("Current week (all models)"))
+    }
+
+    /// Regression: Claude Code 2.1.233 prints "Per-model breakdown unavailable (rate
+    /// limited — try again in a moment)" under a perfectly healthy `/usage` panel, and
+    /// matching the bare phrase showed the popover as rate-limited on a fine account.
+    ///
+    /// Both frames of the real capture are checked. The prefix ends while the footer is
+    /// still on screen -- the exact frame a capture can settle on -- and the whole stream
+    /// is the panel once the breakdown has arrived.
+    @Test("The per-model breakdown footer does not make a healthy panel rate-limited")
+    func breakdownFooterIsNotRateLimited() throws {
+        let data = try FixtureLoader.data(named: "usage-2-1-233.bin")
+        // Byte 6968 is the end of the "r to retry · Esc to cancel" line under the footer.
+        let withFooter = FixtureLoader.renderScreen(from: data.prefix(6968))
+
+        #expect(withFooter.localizedCaseInsensitiveContains("rate limited"),
+                "this frame is only interesting while it still carries the footer")
+        #expect(withFooter.contains("65% used"), "the session bar is perfectly healthy")
+        #expect(ScreenSignals.hasUsagePanel(withFooter))
+        #expect(!ScreenSignals.isRateLimited(withFooter))
+
+        #expect(!ScreenSignals.isRateLimited(FixtureLoader.renderScreen(from: data)))
     }
 
     @Test("Every session error carries a message a user can act on")

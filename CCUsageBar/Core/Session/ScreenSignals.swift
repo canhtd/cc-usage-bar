@@ -64,15 +64,32 @@ nonisolated enum ScreenSignals {
     /// A bare "rate limit" was tried and removed: it matches ordinary prose anywhere on
     /// the screen -- release notes, a tip, the user's own transcript -- and flipping the
     /// popover into the rate-limited state on that basis is worse than missing a wording.
+    ///
+    /// The wordings come in two tiers because one of them is ambiguous. The sentences in
+    /// `limitReachedMarkers` only ever appear when the CLI is refusing work. "rate limited"
+    /// on its own does not: since 2.1.233 the `/usage` panel prints "Per-model breakdown
+    /// unavailable (rate limited — try again in a moment)" in its footer while the session
+    /// and week bars next to it are perfectly good, and reading that as a limit hit put the
+    /// popover into the rate-limited state on a healthy account. The ambiguous wording
+    /// therefore only counts when no usage bar painted at all -- when the panel really is
+    /// an error page rather than a reading with a degraded footer.
     static func isRateLimited(_ screen: String) -> Bool {
-        let markers = [
-            "usage limit reached",
-            "You've reached your usage limit",
-            "You have reached your usage limit",
-            "Approaching usage limit",
-            "rate limit reached",
-            "rate limited",
-        ]
-        return markers.contains { screen.localizedCaseInsensitiveContains($0) }
+        if limitReachedMarkers.contains(where: { screen.localizedCaseInsensitiveContains($0) }) {
+            return true
+        }
+        guard !hasUsagePanel(screen) else { return false }
+        return ambiguousLimitMarkers.contains { screen.localizedCaseInsensitiveContains($0) }
     }
+
+    /// Wordings that can only come from a limit that has actually been hit.
+    private static let limitReachedMarkers = [
+        "usage limit reached",
+        "You've reached your usage limit",
+        "You have reached your usage limit",
+        "Approaching usage limit",
+        "rate limit reached",
+    ]
+
+    /// Wordings that also appear as a footnote on a healthy panel.
+    private static let ambiguousLimitMarkers = ["rate limited"]
 }

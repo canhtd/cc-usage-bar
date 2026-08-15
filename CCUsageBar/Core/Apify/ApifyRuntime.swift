@@ -19,10 +19,18 @@ final class ApifyRuntime {
     var accountUsername: String?
 
     let client: ApifyClient
-    let tokenStore: ApifyTokenStore
+    let tokenStore: any ApifyTokenStoring
+    /// What the last completed keychain read said. Presence only, never the token itself:
+    /// this type holds the secret for the length of one request and no longer. `nil` until
+    /// the first read has come back, which is a wait the UI has to be able to describe.
+    private(set) var tokenPresence: TokenPresence?
+    /// The keychain read in flight, if any. A scheduler tick that arrives while the
+    /// keychain dialog is still up joins it instead of queueing a second blocking call.
+    var lookupTask: Task<TokenLookup, Never>?
     /// actor id -> display name. Names change too rarely to be worth expiring.
     var actorNames: [String: String] = [:]
-    private let log = Logger(subsystem: "com.danny.ccusagebar", category: "apify")
+    /// Not private: `ApifyRuntime+Token` logs keychain failures through it.
+    let log = Logger(subsystem: "com.danny.ccusagebar", category: "apify")
 
     /// How many runs the popover shows.
     static let shownRunCount = 3
@@ -33,7 +41,7 @@ final class ApifyRuntime {
     init(
         preferences: ApifyPreferences = ApifyPreferences(),
         client: ApifyClient = ApifyClient(),
-        tokenStore: ApifyTokenStore = ApifyTokenStore()
+        tokenStore: any ApifyTokenStoring = ApifyTokenStore()
     ) {
         self.preferences = preferences
         self.client = client
@@ -45,31 +53,17 @@ final class ApifyRuntime {
 
     var isEnabled: Bool { preferences.isEnabled }
 
-    /// Whether a token is stored. Only meaningful while the module is on -- reading it
-    /// while off would touch the keychain, which a disabled module must never do.
-    var hasToken: Bool { preferences.isEnabled && tokenStore.hasToken }
+    // `state` and `tokenPresence` stay `private(set)` so no view can write them. These two
+    // seams exist because `ApifyRuntime+Token` -- which owns the keychain half of the state
+    // machine -- is a separate file, and `private(set)` does not reach across files.
+    func setState(_ new: ApifyState) { state = new }
+    func setTokenPresence(_ new: TokenPresence?) { tokenPresence = new }
 
     /// The percentage the menu bar may show; `nil` whenever there is nothing trustworthy,
     /// including a plan with no monthly cap, where a percentage does not exist.
     var menuBarPercent: Int? {
         guard state == .ready else { return nil }
         return usage?.percentUsed
-    }
-
-    /// Recomputes the state the module sits in when it is not mid-request.
-    ///
-    /// The keychain is only consulted once the module is known to be enabled, so a user who
-    /// never turns Apify on is never a reason for this app to open the keychain at launch.
-    func resetIdleState() {
-        guard preferences.isEnabled else {
-            state = .disabled
-            return
-        }
-        switch lookupToken() {
-        case .token: state = .loading
-        case .missing: state = .needsToken
-        case .unavailable(let status): state = .keychainUnavailable(status)
-        }
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -80,27 +74,6 @@ final class ApifyRuntime {
             accountUsername = nil
         }
         resetIdleState()
-    }
-
-    /// The three answers the keychain can give, kept apart so a failure is never mistaken
-    /// for an empty slot.
-    enum TokenLookup {
-        case token(String)
-        case missing
-        case unavailable(OSStatus)
-    }
-
-    func lookupToken() -> TokenLookup {
-        do {
-            guard let token = try tokenStore.read(), !token.isEmpty else { return .missing }
-            return .token(token)
-        } catch ApifyTokenStore.StoreError.keychain(let status) {
-            log.error("keychain read failed: \(status, privacy: .public)")
-            return .unavailable(status)
-        } catch {
-            log.error("keychain item is unreadable")
-            return .unavailable(errSecInvalidData)
-        }
     }
 
     // MARK: - Polling
@@ -119,8 +92,15 @@ final class ApifyRuntime {
             return nil
         }
         guard !isRefreshing else { return nil }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
+        // The keychain read is awaited, not called inline, and can take as long as the user
+        // leaves the confidential-information dialog up. `isRefreshing` is already set, so
+        // the next scheduler tick returns here rather than stacking another blocked read.
+        if usage == nil { state = .waitingForKeychain }
         let token: String
-        switch lookupToken() {
+        switch await lookupToken() {
         case .token(let value):
             token = value
         case .missing:
@@ -134,8 +114,6 @@ final class ApifyRuntime {
             return nil
         }
 
-        isRefreshing = true
-        defer { isRefreshing = false }
         if usage == nil { state = .loading }
 
         do {
