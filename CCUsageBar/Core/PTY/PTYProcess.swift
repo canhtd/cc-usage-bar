@@ -14,11 +14,21 @@ final class PTYProcess {
         case forkFailed(Int32)
     }
 
+    /// Reported when the child is gone but its status could not be collected.
+    nonisolated static let unknownExitCode: Int32 = -1
+    /// Give up on a blocked terminal rather than spinning on `EAGAIN` forever.
+    private static let writeDeadline: TimeInterval = 0.5
+
     private(set) var isRunning = false
+    /// Set to -1 the moment teardown starts. The descriptor itself is closed by the read
+    /// source's cancel handler, never here -- see `terminate()`.
     private var masterFD: Int32 = -1
     private var childPID: pid_t = -1
     var readSource: DispatchSourceRead?
     var exitSource: DispatchSourceProcess?
+    /// Whoever claims this reaps the child; the other side must not call `waitpid` or
+    /// signal the pid, because by then the number may belong to somebody else.
+    nonisolated let reapToken = ReapToken()
 
     /// Raw bytes from the terminal, delivered on the main actor.
     var onData: ((Data) -> Void)?
@@ -30,6 +40,7 @@ final class PTYProcess {
     init() {}
 
     deinit {
+        // Cancelling the read source runs its cancel handler, which closes the descriptor.
         readSource?.cancel()
         exitSource?.cancel()
     }
@@ -72,24 +83,28 @@ final class PTYProcess {
     ///
     /// The group matters: `zsh -l -c claude` may leave the Node process as a sibling, and
     /// signalling only the direct child would strand it.
+    ///
+    /// The descriptor is *not* closed here. `cancel()` is asynchronous, so the read handler
+    /// may still be inside `read(2)`; closing underneath it would let the number be reused
+    /// by the next `open` -- history.jsonl, say -- and have the handler consume bytes from
+    /// it. The cancel handler owns the close, and it runs only once no handler is active.
     func terminate() {
         guard isRunning else { return }
         isRunning = false
-        readSource?.cancel()
-        readSource = nil
-        exitSource?.cancel()
-        exitSource = nil
         let pid = childPID
         childPID = -1
-        if masterFD >= 0 {
-            close(masterFD)
-            masterFD = -1
-        }
-        if pid > 0 { Self.reap(pid) }
+        masterFD = -1  // stop further writes immediately
+        exitSource?.cancel()
+        exitSource = nil
+        readSource?.cancel()  // its cancel handler closes the descriptor
+        readSource = nil
+        if pid > 0, reapToken.claim() { Self.reap(pid) }
     }
 
     /// Asks nicely, waits, then insists -- and blocks on the final `waitpid` so the child
     /// is genuinely reaped rather than left defunct.
+    ///
+    /// Only ever called by whoever won `reapToken`, so the pid is still ours to signal.
     nonisolated private static func reap(_ pid: pid_t) {
         DispatchQueue.global(qos: .utility).async {
             kill(-pid, SIGTERM)
@@ -109,19 +124,29 @@ final class PTYProcess {
 
     func write(_ bytes: [UInt8]) {
         guard isRunning, masterFD >= 0, !bytes.isEmpty else { return }
+        let deadline = Date().addingTimeInterval(Self.writeDeadline)
         var offset = 0
         bytes.withUnsafeBufferPointer { buffer in
             guard let base = buffer.baseAddress else { return }
             while offset < bytes.count {
+                // errno is only meaningful after a failing call; clear it so a stale value
+                // from somewhere else cannot be read as EAGAIN and spin this loop.
+                errno = 0
                 let written = Darwin.write(masterFD, base + offset, bytes.count - offset)
                 if written > 0 {
                     offset += written
+                } else if written == 0 {
+                    break  // no progress and no error: the terminal is not taking bytes
                 } else if errno == EINTR || errno == EAGAIN {
+                    if Date() >= deadline { break }
                     usleep(2000)
                 } else {
                     break
                 }
             }
+        }
+        if offset < bytes.count {
+            log.error("short write to pty: \(offset, privacy: .public)/\(bytes.count, privacy: .public)")
         }
     }
 
@@ -138,12 +163,10 @@ final class PTYProcess {
         exitSource = nil
         guard isRunning else { return }
         isRunning = false
-        readSource?.cancel()
+        childPID = -1
+        masterFD = -1
+        readSource?.cancel()  // its cancel handler closes the descriptor
         readSource = nil
-        if masterFD >= 0 {
-            close(masterFD)
-            masterFD = -1
-        }
         onExit?(code)
     }
 

@@ -37,12 +37,14 @@ struct UsageSectionRow: View {
         .accessibilityLabel("\(section.title), \(section.percentUsed) percent used")
     }
 
+    /// The same bands as the menu bar (F1): neutral up to 69%, orange 70-89%, red from
+    /// 90%. Using the accent colour for "normal" made every healthy reading look like a
+    /// warning, because this app's accent is orange -- 8% and 78% were the same colour.
     private var tint: Color {
         switch MenuBarTitle.severity(forPercent: section.percentUsed) {
-        case .normal: return .accentColor
+        case .normal, .unknown: return .secondary
         case .warning: return .orange
         case .critical: return .red
-        case .unknown: return .secondary
         }
     }
 }

@@ -82,6 +82,76 @@ struct ThresholdTrackerTests {
         #expect(events.isEmpty)
     }
 
+    /// M-3: an alert that was never delivered must stay pending, or a permission prompt
+    /// the user has not answered yet silently eats the crossing for the whole window.
+    @Test("Deciding does not record; only delivery does")
+    func pendingIsNotDelivery() {
+        var tracker = ThresholdTracker()
+        let reading = snapshot(96, resetsAt: window)
+        let first = tracker.pendingEvents(
+            snapshot: reading, profileID: profileA, profileName: "Default",
+            thresholds: [80, 95], isEnabled: { _ in true })
+        #expect(first.map(\.threshold) == [95, 80])
+        #expect(tracker.fired.isEmpty)
+
+        // Nothing was delivered, so the same crossings are still pending.
+        let second = tracker.pendingEvents(
+            snapshot: reading, profileID: profileA, profileName: "Default",
+            thresholds: [80, 95], isEnabled: { _ in true })
+        #expect(second == first)
+
+        tracker.markDelivered(first)
+        #expect(tracker.fired.count == 2)
+        let third = tracker.pendingEvents(
+            snapshot: reading, profileID: profileA, profileName: "Default",
+            thresholds: [80, 95], isEnabled: { _ in true })
+        #expect(third.isEmpty)
+    }
+
+    @Test("Only the alerts that were delivered are recorded")
+    func partialDeliveryLeavesTheRestPending() {
+        var tracker = ThresholdTracker()
+        let reading = snapshot(96, resetsAt: window)
+        let events = tracker.pendingEvents(
+            snapshot: reading, profileID: profileA, profileName: "Default",
+            thresholds: [80, 95], isEnabled: { _ in true })
+        tracker.markDelivered([events[0]])  // the 95 landed, the 80 failed
+        let remaining = tracker.pendingEvents(
+            snapshot: reading, profileID: profileA, profileName: "Default",
+            thresholds: [80, 95], isEnabled: { _ in true })
+        #expect(remaining.map(\.threshold) == [80])
+    }
+
+    /// m-14: a section Claude Code stops reporting must not keep its keys forever.
+    @Test("Keys for sections missing from the snapshot are pruned")
+    func prunesVanishedSections() {
+        var tracker = ThresholdTracker()
+        let both = UsageSnapshot(sections: [
+            UsageSection(
+                title: "Current session", percentUsed: 96, resetsText: "Resets 1pm",
+                resetsAt: window),
+            UsageSection(
+                title: "Current week (all models)", percentUsed: 96, resetsText: "Resets 1pm",
+                resetsAt: window),
+        ])
+        _ = evaluate(&tracker, both)
+        #expect(tracker.fired.count == 4)
+
+        // A later snapshot reports only the session section.
+        tracker.prune(snapshot: snapshot(96, resetsAt: window), profileID: profileA)
+        #expect(tracker.fired.count == 2)
+        #expect(tracker.fired.allSatisfy { $0.contains("current session") })
+    }
+
+    @Test("Pruning one profile leaves another profile's keys alone")
+    func prunesOnlyTheGivenProfile() {
+        var tracker = ThresholdTracker()
+        _ = evaluate(&tracker, snapshot(96, resetsAt: window), profile: profileB)
+        tracker.prune(
+            snapshot: snapshot(96, resetsAt: window, title: "Something else"), profileID: profileA)
+        #expect(tracker.fired.count == 2)
+    }
+
     @Test("The fired set survives a round trip through JSON")
     func codableRoundTrip() throws {
         var tracker = ThresholdTracker()

@@ -28,6 +28,8 @@ nonisolated enum UsageSessionError: Error, Sendable, Equatable {
     case needsSetup
     case claudeNotFound
     case timedOut
+    case busy
+    case cancelled
     case processExited(Int32)
     case launchFailed(String)
     case noUsageSections
@@ -40,6 +42,10 @@ nonisolated enum UsageSessionError: Error, Sendable, Equatable {
             return "`claude` was not found on your login shell PATH. Install Claude Code, then try again."
         case .timedOut:
             return "Claude Code did not answer in time. Try refreshing again."
+        case .busy:
+            return "A refresh is already running for this profile."
+        case .cancelled:
+            return "The refresh was cancelled."
         case .processExited(let code):
             return "Claude Code exited unexpectedly (status \(code))."
         case .launchFailed(let reason):

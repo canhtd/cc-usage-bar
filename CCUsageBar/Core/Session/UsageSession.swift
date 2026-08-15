@@ -17,8 +17,9 @@ final class UsageSession {
         static let ptyRows = 60
         static let ptyColumns = 120
         static let queryTimeout: Duration = .seconds(30)
-        /// The screen must stop changing for this long before a capture is trusted.
-        static let settle: Duration = .milliseconds(1200)
+        /// The parsed sections must stop changing for this long before a capture is
+        /// trusted. Spec R4 calls for 1.5s.
+        static let settle: Duration = .milliseconds(1500)
         static let pollInterval: Duration = .milliseconds(200)
         static let escapeDelay: Duration = .milliseconds(250)
         static let submitDelay: Duration = .milliseconds(600)
@@ -44,7 +45,9 @@ final class UsageSession {
     let configDirectory: URL?
     private(set) var phase: UsageSessionPhase = .stopped
 
-    var process: PTYProcess?
+    var process: (any PTYControlling)?
+    /// How a child is made. Injected so the state machine can be tested without forking.
+    private let makeProcess: @MainActor () -> any PTYControlling
     var decoder = UTF8StreamDecoder()
     var interpreter = ANSIInterpreter(rows: Timing.ptyRows + 1, columns: Timing.ptyColumns)
     var scratchDirectory: URL?
@@ -63,16 +66,21 @@ final class UsageSession {
 
     let log = Logger(subsystem: "com.danny.ccusagebar", category: "session")
 
-    init(profileID: UUID, configDirectory: URL?) {
+    init(
+        profileID: UUID,
+        configDirectory: URL?,
+        makeProcess: @escaping @MainActor () -> any PTYControlling = { PTYProcess() }
+    ) {
         self.profileID = profileID
         self.configDirectory = configDirectory
+        self.makeProcess = makeProcess
     }
 
     // MARK: - Public API
 
     /// Runs `/usage` once, launching or reusing the child process as needed.
     func fetch() async throws -> UsageCapture {
-        guard continuation == nil else { throw UsageSessionError.timedOut }
+        guard continuation == nil else { throw UsageSessionError.busy }
         queryID += 1
         let id = queryID
         idleTask?.cancel()
@@ -100,6 +108,10 @@ final class UsageSession {
         idleTask?.cancel()
         readyTask = nil
         captureTask = nil
+        // A fetch in flight has to be resumed here, or its caller waits forever and
+        // `ProfileRuntime.isFetching` stays latched -- no refresh until the app restarts.
+        // Reached whenever a profile's folder changes or the profile is deleted mid-fetch.
+        finish(.failure(UsageSessionError.cancelled))
         process?.terminate()
         process = nil
         phase = .stopped
@@ -120,7 +132,7 @@ final class UsageSession {
         let scratch = try PTYLaunchSpec.makeScratchDirectory()
         scratchDirectory = scratch
         let spec = PTYLaunchSpec(workingDirectory: scratch, configDirectory: configDirectory)
-        let process = PTYProcess()
+        let process = makeProcess()
         process.onData = { [weak self] data in self?.receive(data) }
         process.onExit = { [weak self] code in self?.handleExit(code) }
         try process.launch(spec: spec, rows: Timing.ptyRows, columns: Timing.ptyColumns)
@@ -133,20 +145,26 @@ final class UsageSession {
     // MARK: - Stream handling
 
     /// Startup only. Once a query is in flight the capture task owns the screen.
+    ///
+    /// Rendering `screen.text` and running the signal scans costs a full grid walk, and
+    /// this runs on the main actor for every chunk Ink emits -- so it is done only in the
+    /// phases that act on the result. A `claude` that dies later is caught by the exit
+    /// handler, and onboarding screens only ever appear before the prompt.
     private func receive(_ data: Data) {
         interpreter.feed(decoder.decode(data))
         lastDataAt = Date()
-        let screen = interpreter.screen.text
-
-        if ScreenSignals.isCommandNotFound(screen) { return fail(.claudeNotFound) }
-        if let marker = ScreenSignals.setupMarker(in: screen) {
-            log.debug("needs-setup marker matched: \(marker, privacy: .public)")
-            return fail(.needsSetup)
-        }
 
         switch phase {
-        case .waitingForBanner, .waitingForPrompt: advanceStartup(screen: screen)
-        case .stopped, .idle, .waitingForResult, .capturing: break
+        case .waitingForBanner, .waitingForPrompt:
+            let screen = interpreter.screen.text
+            if ScreenSignals.isCommandNotFound(screen) { return fail(.claudeNotFound) }
+            if let marker = ScreenSignals.setupMarker(in: screen) {
+                log.debug("needs-setup marker matched: \(marker, privacy: .public)")
+                return fail(.needsSetup)
+            }
+            advanceStartup(screen: screen)
+        case .stopped, .idle, .waitingForResult, .capturing:
+            break
         }
     }
 
@@ -163,10 +181,13 @@ final class UsageSession {
     }
 
     private func handleExit(_ code: Int32) {
-        phase = .stopped
         process = nil
         if continuation != nil {
             fail(code == 127 ? .claudeNotFound : .processExited(code))
+        } else {
+            // No query to report to, but the scratch directory and decoder state still
+            // have to go; leaving them behind leaks a temp directory per dead session.
+            stop()
         }
     }
 

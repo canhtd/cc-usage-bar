@@ -26,16 +26,25 @@ final class NotificationService {
     }
 
     /// Evaluates a snapshot and posts one notification per new crossing.
+    ///
+    /// A crossing is recorded only once the notification centre has accepted it. Marking
+    /// first would mean that the very first crossing -- the one that triggers the
+    /// permission prompt, before the user has answered it -- is silently consumed and
+    /// never shown again for that reset window.
     func process(
         snapshot: UsageSnapshot, profile: Profile, preferences: AppPreferences
     ) async {
-        let events = tracker.evaluate(
+        tracker.prune(snapshot: snapshot, profileID: profile.id)
+        let events = tracker.pendingEvents(
             snapshot: snapshot, profileID: profile.id, profileName: profile.shortName,
             thresholds: preferences.thresholds,
             isEnabled: { preferences.notificationsEnabled(forSectionTitled: $0.title) })
+        guard !events.isEmpty, await ensureAuthorized() else { return persist() }
+
+        var delivered: [ThresholdEvent] = []
+        for event in events where await post(event) { delivered.append(event) }
+        tracker.markDelivered(delivered)
         persist()
-        guard !events.isEmpty, await ensureAuthorized() else { return }
-        for event in events { await post(event) }
     }
 
     /// Asks for permission the first time it is needed; later calls just read the status.
@@ -60,14 +69,21 @@ final class NotificationService {
         }
     }
 
-    private func post(_ event: ThresholdEvent) async {
-        guard let center else { return }
+    /// Returns whether the notification centre accepted the alert.
+    private func post(_ event: ThresholdEvent) async -> Bool {
+        guard let center else { return false }
         let content = UNMutableNotificationContent()
         content.title = event.title
         content.body = event.body
         let request = UNNotificationRequest(
             identifier: UUID().uuidString, content: content, trigger: nil)
-        try? await center.add(request)
+        do {
+            try await center.add(request)
+            return true
+        } catch {
+            log.error("could not post notification: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
     }
 
     private func persist() {

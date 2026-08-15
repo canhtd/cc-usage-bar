@@ -31,15 +31,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains(Self.showSettingsArgument) {
             presentForCapture { [weak self] in self?.openSettings() }
         }
-        if let directory = DebugCapture.outputDirectory {
-            presentForCapture { [weak self] in
-                guard let self, let model = self.model else { return }
-                Task {
-                    await DebugCapture.captureAll(
-                        model: model, statusButton: self.statusItem?.buttonView, into: directory)
+        #if DEBUG
+            if let directory = DebugCapture.outputDirectory {
+                presentForCapture { [weak self] in
+                    guard let self, let model = self.model else { return }
+                    Task {
+                        await DebugCapture.captureAll(
+                            model: model, statusButton: self.statusItem?.buttonView,
+                            into: directory)
+                    }
                 }
             }
-        }
+        #endif
     }
 
     func applicationWillTerminate(_ notification: Notification) {

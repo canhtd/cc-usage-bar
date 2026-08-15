@@ -87,9 +87,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// Re-renders whenever anything the title depends on changes, then re-arms itself.
     private func observeModel() {
         withObservationTracking {
-            let runtime = model.activeRuntime
-            _ = runtime.snapshot
-            _ = runtime.state
+            // Deliberately the non-creating accessor: `activeRuntime` would insert into
+            // `model.runtimes` from inside the tracked read.
+            if let runtime = model.loadedActiveRuntime {
+                _ = runtime.snapshot
+                _ = runtime.state
+            }
+            _ = model.runtimes.keys
             _ = model.preferences.menuBarDisplay
             _ = model.preferences.activeProfileID
         } onChange: { [weak self] in

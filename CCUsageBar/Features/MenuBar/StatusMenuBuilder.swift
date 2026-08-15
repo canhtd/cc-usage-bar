@@ -14,6 +14,9 @@ final class StatusMenuBuilder: NSObject {
 
     func build() -> NSMenu {
         let menu = NSMenu()
+        // Items carry their own `isEnabled`; with autoenabling on, AppKit overrides it by
+        // validating selectors and the "Refresh Now" disable during a fetch never shows.
+        menu.autoenablesItems = false
         menu.addItem(statusHeader())
         menu.addItem(.separator())
 

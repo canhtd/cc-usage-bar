@@ -60,12 +60,18 @@ nonisolated enum ScreenSignals {
     }
 
     /// Claude Code is reporting that a limit has already been reached.
+    ///
+    /// A bare "rate limit" was tried and removed: it matches ordinary prose anywhere on
+    /// the screen -- release notes, a tip, the user's own transcript -- and flipping the
+    /// popover into the rate-limited state on that basis is worse than missing a wording.
     static func isRateLimited(_ screen: String) -> Bool {
         let markers = [
-            "limit reached",
+            "usage limit reached",
             "You've reached your usage limit",
-            "rate limit",
+            "You have reached your usage limit",
             "Approaching usage limit",
+            "rate limit reached",
+            "rate limited",
         ]
         return markers.contains { screen.localizedCaseInsensitiveContains($0) }
     }

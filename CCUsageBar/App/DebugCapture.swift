@@ -1,8 +1,14 @@
+#if DEBUG
+
 import AppKit
 import OSLog
 import SwiftUI
 
 /// Renders the app's real views to PNG files, for build verification.
+///
+/// Debug builds only. A shipping binary must have exactly the two write locations the
+/// safety model claims -- Application Support and the per-session temp directory -- and a
+/// flag that writes PNGs anywhere the user names would be a third one, even unused.
 ///
 /// Enabled only by the hidden `--capture-ui <directory>` launch argument. It exists
 /// because `screencapture` sees nothing while the Mac is at the lock screen, and because
@@ -153,3 +159,5 @@ enum DebugCapture {
         }
     }
 }
+
+#endif

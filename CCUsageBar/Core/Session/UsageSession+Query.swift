@@ -62,10 +62,15 @@ extension UsageSession {
     ///
     /// Polling rather than reacting to bytes: once Ink finishes painting, the PTY goes
     /// silent, so any check that only runs on arriving data can miss the final frame.
+    ///
+    /// Stability is judged on the *parsed sections*, not on the raw screen. Claude Code
+    /// keeps animating next to the panel -- a spinner, "Scanning local sessions…", a
+    /// countdown in the status line -- so a whole-screen comparison never settles and the
+    /// query dies at the 30-second timeout with a perfectly good answer on screen.
     func startCapture(for id: Int) {
         captureTask?.cancel()
         captureTask = Task { [weak self] in
-            var lastText = ""
+            var lastSections: [UsageSection]?
             var stableSince = Date()
             let submittedAt = Date()
             while !Task.isCancelled {
@@ -74,28 +79,30 @@ extension UsageSession {
                 guard self.phase == .waitingForResult || self.phase == .capturing else { return }
 
                 let text = self.interpreter.screen.text
-                if text != lastText {
-                    lastText = text
-                    stableSince = Date()
-                }
-                if ScreenSignals.hasUsagePanel(text) {
-                    if self.phase == .waitingForResult { self.setPhase(.capturing) }
-                    if Date().timeIntervalSince(stableSince) >= Timing.settle.seconds {
-                        self.completeCapture(text: text)
-                        return
+                guard ScreenSignals.hasUsagePanel(text) else {
+                    guard Date().timeIntervalSince(submittedAt) >= Timing.resubmitAfter else {
+                        continue
                     }
-                } else if Date().timeIntervalSince(submittedAt) >= Timing.resubmitAfter {
                     guard self.submitAttempts < Timing.maxSubmitAttempts else { return }
                     self.log.debug("no usage panel yet; re-sending /usage")
                     self.submitUsageCommand(for: id)
+                    return
+                }
+                if self.phase == .waitingForResult { self.setPhase(.capturing) }
+                let snapshot = UsageParser.parse(screenText: text)
+                if snapshot.sections != lastSections {
+                    lastSections = snapshot.sections
+                    stableSince = Date()
+                }
+                if Date().timeIntervalSince(stableSince) >= Timing.settle.seconds {
+                    self.completeCapture(text: text, snapshot: snapshot)
                     return
                 }
             }
         }
     }
 
-    private func completeCapture(text: String) {
-        let snapshot = UsageParser.parse(screenText: text)
+    private func completeCapture(text: String, snapshot: UsageSnapshot) {
         guard !snapshot.isEmpty else { return fail(.noUsageSections) }
         let capture = UsageCapture(
             snapshot: snapshot,

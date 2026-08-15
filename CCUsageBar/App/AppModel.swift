@@ -30,11 +30,15 @@ final class AppModel {
     // MARK: - Lifecycle
 
     func start() {
-        Task { await history.loadAndPrune() }
         let scheduler = RefreshScheduler { [weak self] in self?.refreshActive() }
         scheduler.update(interval: preferences.refreshInterval)
         self.scheduler = scheduler
-        refreshActive()
+        // Prune first: the first fetch appends to history, and pruning afterwards would
+        // race the append and could drop the sample that was just written.
+        Task { [weak self] in
+            await self?.history.loadAndPrune()
+            self?.refreshActive()
+        }
     }
 
     func stopAll() {
@@ -47,6 +51,13 @@ final class AppModel {
     var activeProfile: Profile { preferences.activeProfile }
 
     var activeRuntime: ProfileRuntime { runtime(for: activeProfile) }
+
+    /// The active runtime only if it already exists.
+    ///
+    /// For observers: `activeRuntime` creates a runtime on first read, and creating one
+    /// inside `withObservationTracking` mutates `runtimes` from within the very read that
+    /// is being tracked.
+    var loadedActiveRuntime: ProfileRuntime? { runtimes[preferences.activeProfileID] }
 
     /// Looks up a runtime, creating it on first use.
     ///

@@ -52,7 +52,9 @@ nonisolated enum UsageParser {
             cursor -= 1
             if candidate.isEmpty { continue }
             if isBarOrData(candidate) { continue }
-            guard candidate.count <= 80 else { return nil }
+            // A wrapped paragraph is not a heading, but the real heading may still be the
+            // line above it, so keep looking rather than giving up on the section.
+            if candidate.count > 80 { continue }
             return candidate
         }
         return nil

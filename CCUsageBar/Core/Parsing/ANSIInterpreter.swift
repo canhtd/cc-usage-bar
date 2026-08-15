@@ -11,6 +11,9 @@ nonisolated final class ANSIInterpreter {
     private var partial: String = ""
     /// Escape sequences never grow past this; a stray ESC must not stall the stream.
     private static let maxPartial = 64
+    /// Upper bound on how far `escapeLength` looks ahead; two more than `maxPartial` so a
+    /// sequence exactly at the buffering limit is still recognised as complete.
+    private static let maxScan = maxPartial + 2
 
     init(rows: Int, columns: Int) {
         screen = ANSIScreen(rows: rows, columns: columns)
@@ -79,29 +82,50 @@ nonisolated final class ANSIInterpreter {
     }
 
     /// Length of the escape sequence starting at the head of `input`, if it is terminated.
+    ///
+    /// Walks indices instead of materialising `Array(input)`. The old version copied the
+    /// whole remaining chunk on every ESC, which is quadratic in the number of escapes --
+    /// and Ink emits one every few characters, on the main actor.
+    ///
+    /// Only the first `maxScan` characters are ever examined. Every sequence this parser
+    /// understands is far shorter than that, and `feed` already abandons anything longer,
+    /// so the bound costs nothing and keeps a stray ESC from scanning a 16 KB chunk.
     private static func escapeLength(in input: Substring) -> EscapeLength {
-        let characters = Array(input)
-        guard characters.count >= 2 else { return .incomplete }
-        switch characters[1] {
+        let end = input.index(input.startIndex, offsetBy: maxScan, limitedBy: input.endIndex)
+            ?? input.endIndex
+        let second = input.index(after: input.startIndex)
+        guard second < end else { return .incomplete }
+
+        func value(at index: Substring.Index) -> UInt32? {
+            input[index].unicodeScalars.first?.value
+        }
+
+        switch input[second] {
         case "[":
-            var index = 2
-            while index < characters.count, let scalar = characters[index].unicodeScalars.first,
-                (0x30...0x3F).contains(scalar.value) { index += 1 }  // parameter bytes
-            while index < characters.count, let scalar = characters[index].unicodeScalars.first,
-                (0x20...0x2F).contains(scalar.value) { index += 1 }  // intermediate bytes
-            guard index < characters.count else { return .incomplete }
-            return .complete(index + 1)
+            var index = input.index(after: second)
+            while index < end, let scalar = value(at: index), (0x30...0x3F).contains(scalar) {
+                index = input.index(after: index)  // parameter bytes
+            }
+            while index < end, let scalar = value(at: index), (0x20...0x2F).contains(scalar) {
+                index = input.index(after: index)  // intermediate bytes
+            }
+            guard index < end else { return .incomplete }
+            return .complete(input.distance(from: input.startIndex, to: index) + 1)
         case "]":  // OSC, terminated by BEL or ST
-            var index = 2
-            while index < characters.count {
-                if characters[index] == "\u{07}" { return .complete(index + 1) }
-                if characters[index] == "\u{1B}", index + 1 < characters.count,
-                    characters[index + 1] == "\\" { return .complete(index + 2) }
-                index += 1
+            var index = input.index(after: second)
+            while index < end {
+                if input[index] == "\u{07}" {
+                    return .complete(input.distance(from: input.startIndex, to: index) + 1)
+                }
+                let next = input.index(after: index)
+                if input[index] == "\u{1B}", next < end, input[next] == "\\" {
+                    return .complete(input.distance(from: input.startIndex, to: index) + 2)
+                }
+                index = next
             }
             return .incomplete
         case "(", ")", "*", "+", "#", "%":
-            return characters.count >= 3 ? .complete(3) : .incomplete
+            return input.index(after: second) < end ? .complete(3) : .incomplete
         default:
             return .complete(2)
         }

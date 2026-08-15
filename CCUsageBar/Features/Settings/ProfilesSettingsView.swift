@@ -128,6 +128,9 @@ private struct ProfileRow: View {
                 var updated = profile
                 updated.name = newName
                 model.preferences.updateProfile(updated)
+                // Same path every other edit takes: without it the runtime keeps the old
+                // name and the menu bar, tooltip and notifications go on using it.
+                model.syncRuntimes()
             })
     }
 }
