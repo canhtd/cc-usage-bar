@@ -67,12 +67,43 @@ final class NotificationService {
     func deliver(_ alerts: [PendingAlert]) async {
         ledger.prune()
         let fresh = ledger.pending(alerts)
-        guard !fresh.isEmpty, await ensureAuthorized() else { return persistLedger() }
+        guard !fresh.isEmpty, await authorizeDelivery() else { return persistLedger() }
 
+        let (toPost, superseded) = AlertLedger.partition(fresh)
         var delivered: [String] = []
-        for alert in fresh where await post(alert) { delivered.append(alert.key) }
+        var deliveredGroups: Set<String> = []
+        for alert in toPost where await deliverOne(alert) {
+            delivered.append(alert.key)
+            if let group = alert.group { deliveredGroups.insert(group) }
+        }
+        // A superseded key is only burned once the alert that superseded it actually
+        // reached the user. Marking it on a failed post would lose the crossing outright.
+        delivered += superseded
+            .filter { $0.group.map(deliveredGroups.contains) ?? false }
+            .map(\.key)
         ledger.markDelivered(delivered)
         persistLedger()
+    }
+
+    #if DEBUG
+        /// Test seam: stands in for the notification centre so the deliver-then-mark
+        /// ordering can be tested without the test host actually posting banners at the
+        /// user. Not compiled into a release build.
+        var postHandlerForTesting: (@MainActor (PendingAlert) async -> Bool)?
+    #endif
+
+    private func authorizeDelivery() async -> Bool {
+        #if DEBUG
+            if postHandlerForTesting != nil { return true }
+        #endif
+        return await ensureAuthorized()
+    }
+
+    private func deliverOne(_ alert: PendingAlert) async -> Bool {
+        #if DEBUG
+            if let handler = postHandlerForTesting { return await handler(alert) }
+        #endif
+        return await post(alert)
     }
 
     /// Asks for permission the first time it is needed; later calls just read the status.

@@ -20,6 +20,10 @@ nonisolated struct ApifyTokenStore {
     enum StoreError: Error, Equatable {
         /// The keychain refused the operation; carries the raw `OSStatus` for diagnosis.
         case keychain(OSStatus)
+        /// The item exists but does not hold UTF-8 text. Surfaced rather than swallowed:
+        /// silently reporting "no token" would send the user to re-enter a token that is
+        /// already there, and would keep doing so.
+        case invalidData
     }
 
     let service: String
@@ -48,8 +52,9 @@ nonisolated struct ApifyTokenStore {
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else { throw StoreError.keychain(status) }
-        guard let data = item as? Data, let token = String(data: data, encoding: .utf8) else {
-            return nil
+        guard let data = item as? Data else { throw StoreError.invalidData }
+        guard let token = String(data: data, encoding: .utf8) else {
+            throw StoreError.invalidData
         }
         return token
     }
@@ -75,6 +80,19 @@ nonisolated struct ApifyTokenStore {
         guard addStatus == errSecSuccess else { throw StoreError.keychain(addStatus) }
     }
 
+    #if DEBUG
+        /// Test-only: writes raw bytes, so the "item exists but is not text" path can be
+        /// exercised. Never compiled into a release build.
+        func saveRawForTesting(_ data: Data) throws {
+            try delete()
+            var insert = identity
+            insert[kSecValueData as String] = data
+            insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            let status = SecItemAdd(insert as CFDictionary, nil)
+            guard status == errSecSuccess else { throw StoreError.keychain(status) }
+        }
+    #endif
+
     func delete() throws {
         let status = SecItemDelete(identity as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
@@ -82,5 +100,16 @@ nonisolated struct ApifyTokenStore {
         }
     }
 
-    var hasToken: Bool { (try? read()) .flatMap { $0 } != nil }
+    /// Whether a token is believed to exist.
+    ///
+    /// A keychain failure answers `true`. Answering `false` would present a locked or
+    /// broken keychain as "you have not set a token yet", which hides the real fault and
+    /// offers the user a fix that cannot work.
+    var hasToken: Bool {
+        do {
+            return try read() != nil
+        } catch {
+            return true
+        }
+    }
 }

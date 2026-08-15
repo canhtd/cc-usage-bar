@@ -12,9 +12,13 @@ convenient it seems.
       `Core/Apify/ApifyClient.swift`, may use `URLSession`/`URLRequest`. Every URL is built
       by `ApifyEndpoint` and re-validated by `ApifyEndpoint.validate` against
       `https://api.apify.com/v2/` on the default port, with no userinfo — proven by
-      `ApifyEndpointTests`. Ephemeral session, no cookies, no cache, 15 s timeout. Requests
-      happen only while the user has enabled the Apify module. No `NWConnection`, no
-      `socket(`, no networking anywhere else in the app target.
+      `ApifyEndpointTests`. Ephemeral session, no cookies, no cache, 15 s timeout.
+      **Redirects are never followed** — `ApifyRedirectBlocker` (same file) is attached to every task
+      and returns `nil`, a 3xx status is an error, and `response.url` is re-validated
+      before decoding, so the bearer token cannot be replayed to a `Location:` host.
+      Requests happen only while the user has enabled the Apify module — including
+      "Test connection". No `NWConnection`, no `socket(`, no networking anywhere else in
+      the app target.
       The only other outbound action is `NSWorkspace.open` in `NotificationRouter`, limited
       to `https://console.apify.com/...` by the same kind of check.
 - [ ] **S2' — Keychain is app-own only.** Exactly one file,
@@ -23,6 +27,8 @@ convenient it seems.
       (`com.danny.ccusagebar.apify`) and `kSecAttrAccount` (`apify-api-token`), so no query
       here can enumerate or return another item. The token is never logged, never written
       to Application Support, never recorded in history and never shown in the raw view.
+      A keychain failure is reported as `ApifyState.keychainUnavailable`, never silently
+      downgraded to "no token"; a disabled module never opens the keychain at all.
 - [ ] **S3 — No credential access.** Never read `~/.claude`, `.credentials.json`, or
       anything matching `sk-ant`. The Apify token is typed or pasted by the user into a
       `SecureField`; it is never discovered from disk or the environment. Writes are limited

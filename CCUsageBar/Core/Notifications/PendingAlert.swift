@@ -16,4 +16,8 @@ nonisolated struct PendingAlert: Hashable, Sendable {
     /// The only URLs this app ever opens are Apify console run pages; `NotificationService`
     /// re-checks the host before handing anything to `NSWorkspace`.
     var url: URL?
+    /// Alerts that share a group are mutually exclusive within one delivery pass: the
+    /// first is posted and the rest are recorded as delivered without notifying. Lets the
+    /// budget rule report every crossed threshold while the user hears about it once.
+    var group: String?
 }

@@ -21,6 +21,9 @@ final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
     nonisolated static func isOpenable(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased(), scheme == "https" else { return false }
         guard let host = url.host?.lowercased(), host == allowedHost else { return false }
+        // Symmetric with `ApifyEndpoint.validate`: a non-default port is a different
+        // endpoint, whatever the host says.
+        guard url.port == nil || url.port == 443 else { return false }
         return url.user == nil && url.password == nil
     }
 

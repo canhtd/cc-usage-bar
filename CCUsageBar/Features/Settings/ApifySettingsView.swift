@@ -24,8 +24,11 @@ struct ApifySettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            tokenSection
+            // Gated on the toggle so the caption above stays literally true: with the
+            // module off there is no field to type a token into and no button that could
+            // make a request.
             if preferences.isEnabled {
+                tokenSection
                 rulesSection
             }
         }
@@ -51,6 +54,11 @@ struct ApifySettingsView: View {
             Text("Stored in your keychain, sent only to api.apify.com. Create one under Settings → API & Integrations in the Apify console.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let message = apify.state.message, apify.state.needsSettings == false {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if apify.hasToken {
                 Button("Remove token", role: .destructive) {
                     apify.clearToken()

@@ -21,9 +21,17 @@ extension ApifyRuntime {
     }
 
     /// `GET /v2/users/me`, so the user can prove the token works before trusting the bar.
+    ///
+    /// Gated on the module being enabled, which keeps the Settings caption literally true:
+    /// with the toggle off this app makes no request at all, not even a diagnostic one.
     func testConnection() async -> Result<String, ApifyClient.ClientError> {
-        let token = (try? tokenStore.read()) ?? nil
-        guard let token, !token.isEmpty else { return .failure(.noToken) }
+        guard preferences.isEnabled else { return .failure(.moduleDisabled) }
+        let token: String
+        switch lookupToken() {
+        case .token(let value): token = value
+        case .missing: return .failure(.noToken)
+        case .unavailable(let status): return .failure(.transport("keychain error \(status)"))
+        }
         do {
             let user = try await client.user(token: token)
             accountUsername = user.username
@@ -42,7 +50,10 @@ extension ApifyRuntime {
     /// `samples` is the Apify spend history inside the spike window; the caller supplies it
     /// because `HistoryStore` owns it and this type deliberately holds no history.
     func alerts(
-        for usage: ApifyUsage, samples: [ApifySample], now: Date = Date()
+        for usage: ApifyUsage,
+        samples: [ApifySample],
+        lastSpikeAt: Date? = nil,
+        now: Date = Date()
     ) -> [PendingAlert] {
         var pending: [PendingAlert] = []
         if preferences.notifyBudget {
@@ -51,7 +62,8 @@ extension ApifyRuntime {
         }
         if preferences.notifySpike,
             let spike = ApifyRules.spikeAlert(
-                usage: usage, samples: samples, spikePercent: preferences.spikePercent, now: now) {
+                usage: usage, samples: samples, spikePercent: preferences.spikePercent,
+                lastSpikeAt: lastSpikeAt, now: now) {
             pending.append(spike)
         }
         if preferences.notifyRun {

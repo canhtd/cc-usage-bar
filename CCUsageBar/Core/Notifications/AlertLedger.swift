@@ -26,6 +26,39 @@ nonisolated struct AlertLedger: Codable, Equatable, Sendable {
         alerts.filter { !contains($0.key) }
     }
 
+    /// The most recent delivery time among keys starting with `prefix`.
+    ///
+    /// Lets a rule rate-limit itself on real elapsed time rather than on key identity --
+    /// see the spike rule, whose key changes on the wall-clock hour.
+    func lastDelivery(withPrefix prefix: String) -> Date? {
+        deliveredAt.filter { $0.key.hasPrefix(prefix) }.values.max()
+    }
+
+    /// Splits pending alerts into the ones to post and the ones a higher-priority alert in
+    /// the same group has superseded.
+    ///
+    /// Order carries the priority: the rules emit the most important member of a group
+    /// first. Pure, so the policy is testable without a notification centre.
+    static func partition(
+        _ alerts: [PendingAlert]
+    ) -> (post: [PendingAlert], superseded: [PendingAlert]) {
+        var post: [PendingAlert] = []
+        var superseded: [PendingAlert] = []
+        var claimed: Set<String> = []
+        for alert in alerts {
+            guard let group = alert.group else {
+                post.append(alert)
+                continue
+            }
+            if claimed.insert(group).inserted {
+                post.append(alert)
+            } else {
+                superseded.append(alert)
+            }
+        }
+        return (post, superseded)
+    }
+
     mutating func markDelivered(_ keys: [String], at date: Date = Date()) {
         for key in keys { deliveredAt[key] = date }
     }

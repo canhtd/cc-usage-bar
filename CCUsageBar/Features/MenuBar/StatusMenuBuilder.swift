@@ -73,7 +73,7 @@ final class StatusMenuBuilder: NSObject {
     // MARK: - Actions
 
     @objc private func refresh() {
-        model.refreshActive()
+        model.refreshAll()
     }
 
     @objc private func selectProfile(_ sender: NSMenuItem) {

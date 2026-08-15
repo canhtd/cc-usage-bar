@@ -50,6 +50,8 @@ final class ApifyPreferences {
         budgetThresholds = Set(values.map { min(max($0, 1), 100) }).sorted()
     }
 
-    /// The runs endpoint is only worth calling when something actually uses it (A2).
-    var needsRuns: Bool { isEnabled && notifyRun }
+    /// The popover lists recent runs whenever the module is on (A4), so the runs endpoint
+    /// is called for the whole time the module is enabled. The expensive-run toggle below
+    /// controls only whether those runs also raise an alert.
+    var needsRuns: Bool { isEnabled }
 }

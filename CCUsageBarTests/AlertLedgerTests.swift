@@ -51,4 +51,39 @@ struct AlertLedgerTests {
         let decoded = try JSONDecoder().decode(AlertLedger.self, from: data)
         #expect(decoded.contains("apify|run|abc"))
     }
+
+    // MARK: - Grouping and prefix lookup
+
+    @Test("ungrouped alerts all post; grouped ones collapse to the first of each group")
+    func partition() {
+        let alerts = [
+            PendingAlert(key: "b|95", title: "t", body: "b", group: "b"),
+            PendingAlert(key: "b|80", title: "t", body: "b", group: "b"),
+            PendingAlert(key: "b|50", title: "t", body: "b", group: "b"),
+            alert("spike"),
+            PendingAlert(key: "r|1", title: "t", body: "b", group: "r"),
+        ]
+        let (post, superseded) = AlertLedger.partition(alerts)
+        #expect(post.map(\.key) == ["b|95", "spike", "r|1"])
+        #expect(superseded.map(\.key) == ["b|80", "b|50"])
+    }
+
+    @Test("an empty list partitions to nothing rather than tripping")
+    func partitionEmpty() {
+        let (post, superseded) = AlertLedger.partition([])
+        #expect(post.isEmpty)
+        #expect(superseded.isEmpty)
+    }
+
+    @Test("the ledger reports when a prefix last fired, which is how spikes rate-limit")
+    func lastDeliveryByPrefix() {
+        let now = Date()
+        var ledger = AlertLedger()
+        #expect(ledger.lastDelivery(withPrefix: ApifyRules.spikeKeyPrefix) == nil)
+        ledger.markDelivered(["apify|spike|100"], at: now.addingTimeInterval(-7200))
+        ledger.markDelivered(["apify|spike|101"], at: now.addingTimeInterval(-600))
+        ledger.markDelivered(["apify|budget|x|80"], at: now)
+        let last = ledger.lastDelivery(withPrefix: ApifyRules.spikeKeyPrefix)
+        #expect(last == now.addingTimeInterval(-600))
+    }
 }

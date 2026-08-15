@@ -34,6 +34,15 @@ struct ApifyRulesTests {
         #expect(alerts[0].url == nil)
     }
 
+    @Test("all crossed thresholds share a group, so only the highest is announced")
+    func budgetThresholdsAreGrouped() {
+        let alerts = ApifyRules.budgetAlerts(usage: usage(spend: 410), thresholds: [50, 80, 95])
+        #expect(Set(alerts.compactMap(\.group)).count == 1)
+        let (post, superseded) = AlertLedger.partition(alerts)
+        #expect(post.map(\.key) == [alerts[0].key], "only the 80 crossing is posted")
+        #expect(superseded.map(\.key) == [alerts[1].key], "the 50 crossing is recorded silently")
+    }
+
     @Test("nothing fires below the lowest threshold")
     func budgetBelowThreshold() {
         #expect(ApifyRules.budgetAlerts(usage: usage(spend: 100), thresholds: [50]).isEmpty)
@@ -125,6 +134,38 @@ struct ApifyRulesTests {
             ApifyRules.spikeAlert(
                 usage: usage(spend: 400, cap: nil), samples: samples, spikePercent: 10, now: now)
                 == nil)
+    }
+
+    @Test("a sustained burn does not fire twice across the wall-clock hour boundary")
+    func spikeDoesNotDoubleFireAtTheBoundary() throws {
+        // 10:58 and 11:03 fall in different hour buckets, so the key alone would let the
+        // second one through while the burn is the same burn.
+        let firstFire = try #require(ApifyDateFormats.parse("2026-08-15T10:58:00Z"))
+        let secondLook = try #require(ApifyDateFormats.parse("2026-08-15T11:03:00Z"))
+        let laterLook = try #require(ApifyDateFormats.parse("2026-08-15T12:05:00Z"))
+
+        func samples(endingAt now: Date, spend: Double) -> [ApifySample] {
+            [
+                ApifySample(timestamp: now.addingTimeInterval(-3000), monthlyUsageUsd: spend - 60),
+                ApifySample(timestamp: now.addingTimeInterval(-300), monthlyUsageUsd: spend - 10),
+            ]
+        }
+
+        let first = ApifyRules.spikeAlert(
+            usage: usage(spend: 160), samples: samples(endingAt: firstFire, spend: 160),
+            spikePercent: 10, lastSpikeAt: nil, now: firstFire)
+        #expect(first != nil, "the first spike should fire")
+
+        let second = ApifyRules.spikeAlert(
+            usage: usage(spend: 230), samples: samples(endingAt: secondLook, spend: 230),
+            spikePercent: 10, lastSpikeAt: firstFire, now: secondLook)
+        #expect(second == nil, "still inside the window; must not fire again")
+
+        let third = ApifyRules.spikeAlert(
+            usage: usage(spend: 300), samples: samples(endingAt: laterLook, spend: 300),
+            spikePercent: 10, lastSpikeAt: firstFire, now: laterLook)
+        #expect(third != nil, "more than an hour later, a fresh spike should fire")
+        #expect(third?.key != first?.key, "successive spikes need distinct keys")
     }
 
     // MARK: - R-A3 expensive run

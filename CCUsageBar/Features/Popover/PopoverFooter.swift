@@ -40,22 +40,26 @@ struct PopoverFooter: View {
                 .help("Settings")
 
                 Button {
-                    model.refreshActive()
+                    model.refreshAll()
                 } label: {
-                    if runtime.isFetching {
+                    if isFetching {
                         ProgressView().controlSize(.small)
                     } else {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
                 .buttonStyle(.borderless)
-                .disabled(runtime.isFetching)
+                .disabled(isFetching)
                 .help("Refresh now")
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
     }
+
+    /// Busy while either half is in flight, so the button does not look idle during an
+    /// Apify request that has not come back yet.
+    private var isFetching: Bool { runtime.isFetching || model.apify.isRefreshing }
 
     private var updatedText: String {
         guard let updated = runtime.lastUpdated else { return "Never updated" }

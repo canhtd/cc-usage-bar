@@ -11,21 +11,30 @@ nonisolated enum ApifyRules {
     static let defaultRunCostUsd = 5.0
     /// R-A2 looks at the trailing hour.
     static let spikeWindow: TimeInterval = 3600
+    /// Every spike key starts with this, so the ledger can be asked when the last one was.
+    static let spikeKeyPrefix = "apify|spike|"
 
     // MARK: - R-A1 budget thresholds
 
-    /// Fires once per threshold per billing cycle.
+    /// Fires once per threshold per billing cycle, highest first.
+    ///
+    /// All crossed thresholds are returned, but they share a group, so a first poll that
+    /// finds 82% already used posts "at 82% of budget" once instead of firing 50 and 80 as
+    /// well. The superseded keys are still recorded, so they cannot fire later in the same
+    /// cycle -- see `AlertLedger.partition`.
     static func budgetAlerts(usage: ApifyUsage, thresholds: [Int]) -> [PendingAlert] {
         guard let percent = usage.percentUsed, let max = usage.maxMonthlyUsageUsd else {
             return []
         }
+        let group = "apify|budget|\(usage.cycleKey)"
         return thresholds.sorted(by: >)
             .filter { percent >= $0 }
             .map { threshold in
                 PendingAlert(
-                    key: "apify|budget|\(usage.cycleKey)|\(threshold)",
+                    key: "\(group)|\(threshold)",
                     title: "Apify at \(percent)% of budget",
-                    body: "\(money(usage.monthlyUsageUsd)) of \(money(max)) used this cycle.")
+                    body: "\(money(usage.monthlyUsageUsd)) of \(money(max)) used this cycle.",
+                    group: group)
             }
     }
 
@@ -33,15 +42,23 @@ nonisolated enum ApifyRules {
 
     /// Fires when spend over the trailing hour is at least `spikePercent` of the budget.
     ///
-    /// Keyed by the hour bucket, so a sustained burn alerts once an hour rather than on
-    /// every poll. Needs two samples; sparse history is fine, because the baseline is the
-    /// oldest sample still inside the window rather than a fixed offset.
+    /// Rate-limited by `lastSpikeAt`, not by the key alone. The key carries a wall-clock
+    /// hour bucket, and a sustained burn that first alerts at 10:58 would cross into the
+    /// 11:00 bucket five minutes later and fire again -- twice within the window the rule
+    /// is supposed to summarise. Suppressing anything inside `spikeWindow` of the last
+    /// delivered spike makes the interval real rather than nominal; the bucket stays in the
+    /// key so successive spikes still get distinct keys.
+    ///
+    /// Needs two samples; sparse history is fine, because the baseline is the oldest sample
+    /// still inside the window rather than a fixed offset.
     static func spikeAlert(
         usage: ApifyUsage,
         samples: [ApifySample],
         spikePercent: Double,
+        lastSpikeAt: Date? = nil,
         now: Date = Date()
     ) -> PendingAlert? {
+        if let lastSpikeAt, now.timeIntervalSince(lastSpikeAt) < spikeWindow { return nil }
         guard let max = usage.maxMonthlyUsageUsd, max > 0, spikePercent > 0 else { return nil }
         let window = samples
             .filter { $0.timestamp >= now.addingTimeInterval(-spikeWindow) }
@@ -55,7 +72,7 @@ nonisolated enum ApifyRules {
 
         let bucket = Int(now.timeIntervalSince1970 / spikeWindow)
         return PendingAlert(
-            key: "apify|spike|\(bucket)",
+            key: "\(spikeKeyPrefix)\(bucket)",
             title: "Apify spend is spiking",
             body: "Apify spent \(money(delta)) in the last hour "
                 + "(\(percent(share))% of budget).")

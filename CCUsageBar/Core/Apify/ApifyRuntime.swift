@@ -1,34 +1,6 @@
 import Foundation
 import OSLog
-
-/// What the Apify module is currently doing, as the UI needs to describe it.
-nonisolated enum ApifyState: Equatable, Sendable {
-    case disabled
-    case needsToken
-    case loading
-    case ready
-    case failed(ApifyClient.ClientError)
-
-    var isLoading: Bool { self == .loading }
-
-    var message: String? {
-        switch self {
-        case .disabled, .ready: return nil
-        case .needsToken: return ApifyClient.ClientError.noToken.message
-        case .loading: return "Loading Apify usage…"
-        case .failed(let error): return error.message
-        }
-    }
-
-    /// Whether the message should send the user to Settings rather than just inform them.
-    var needsSettings: Bool {
-        switch self {
-        case .needsToken: return true
-        case .failed(let error): return error == .unauthorized
-        default: return false
-        }
-    }
-}
+import Security
 
 /// Owns the Apify half of the app: token, polling, cached usage and error state (A2).
 ///
@@ -42,18 +14,21 @@ final class ApifyRuntime {
     private(set) var usage: ApifyUsage?
     private(set) var state: ApifyState = .disabled
     private(set) var lastUpdated: Date?
+    private(set) var isRefreshing = false
     /// Filled in by "Test connection"; shown next to the token field.
     var accountUsername: String?
 
     let client: ApifyClient
     let tokenStore: ApifyTokenStore
-    /// actor id -> display name. Names never change often enough to be worth expiring.
-    private var actorNames: [String: String] = [:]
-    private var isRefreshing = false
+    /// actor id -> display name. Names change too rarely to be worth expiring.
+    var actorNames: [String: String] = [:]
     private let log = Logger(subsystem: "com.danny.ccusagebar", category: "apify")
 
-    /// How many runs the popover shows, and therefore how many names are worth resolving.
+    /// How many runs the popover shows.
     static let shownRunCount = 3
+    /// Actor-name lookups allowed per poll. A page of 25 runs from 25 different actors
+    /// would otherwise mean 25 extra requests before the first figure appears.
+    static let actorNameBudget = 6
 
     init(
         preferences: ApifyPreferences = ApifyPreferences(),
@@ -63,18 +38,16 @@ final class ApifyRuntime {
         self.preferences = preferences
         self.client = client
         self.tokenStore = tokenStore
-        state = Self.idleState(isEnabled: preferences.isEnabled, hasToken: tokenStore.hasToken)
-    }
-
-    private static func idleState(isEnabled: Bool, hasToken: Bool) -> ApifyState {
-        guard isEnabled else { return .disabled }
-        return hasToken ? .loading : .needsToken
+        resetIdleState()
     }
 
     // MARK: - Module state
 
     var isEnabled: Bool { preferences.isEnabled }
-    var hasToken: Bool { tokenStore.hasToken }
+
+    /// Whether a token is stored. Only meaningful while the module is on -- reading it
+    /// while off would touch the keychain, which a disabled module must never do.
+    var hasToken: Bool { preferences.isEnabled && tokenStore.hasToken }
 
     /// The percentage the menu bar may show; `nil` whenever there is nothing trustworthy,
     /// including a plan with no monthly cap, where a percentage does not exist.
@@ -84,8 +57,19 @@ final class ApifyRuntime {
     }
 
     /// Recomputes the state the module sits in when it is not mid-request.
+    ///
+    /// The keychain is only consulted once the module is known to be enabled, so a user who
+    /// never turns Apify on is never a reason for this app to open the keychain at launch.
     func resetIdleState() {
-        state = Self.idleState(isEnabled: preferences.isEnabled, hasToken: hasToken)
+        guard preferences.isEnabled else {
+            state = .disabled
+            return
+        }
+        switch lookupToken() {
+        case .token: state = .loading
+        case .missing: state = .needsToken
+        case .unavailable(let status): state = .keychainUnavailable(status)
+        }
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -93,8 +77,30 @@ final class ApifyRuntime {
         if !enabled {
             usage = nil
             lastUpdated = nil
+            accountUsername = nil
         }
         resetIdleState()
+    }
+
+    /// The three answers the keychain can give, kept apart so a failure is never mistaken
+    /// for an empty slot.
+    enum TokenLookup {
+        case token(String)
+        case missing
+        case unavailable(OSStatus)
+    }
+
+    func lookupToken() -> TokenLookup {
+        do {
+            guard let token = try tokenStore.read(), !token.isEmpty else { return .missing }
+            return .token(token)
+        } catch ApifyTokenStore.StoreError.keychain(let status) {
+            log.error("keychain read failed: \(status, privacy: .public)")
+            return .unavailable(status)
+        } catch {
+            log.error("keychain item is unreadable")
+            return .unavailable(errSecInvalidData)
+        }
     }
 
     // MARK: - Polling
@@ -113,10 +119,18 @@ final class ApifyRuntime {
             return nil
         }
         guard !isRefreshing else { return nil }
-        let token = (try? tokenStore.read()) ?? nil
-        guard let token, !token.isEmpty else {
+        let token: String
+        switch lookupToken() {
+        case .token(let value):
+            token = value
+        case .missing:
             usage = nil
             state = .needsToken
+            return nil
+        case .unavailable(let status):
+            // The last good figure stays on screen: the keychain being unavailable says
+            // nothing about whether the number is still roughly right.
+            state = .keychainUnavailable(status)
             return nil
         }
 
@@ -149,39 +163,6 @@ final class ApifyRuntime {
             state = .failed(.transport(error.localizedDescription))
             return nil
         }
-    }
-
-    /// Recent runs with actor names resolved. Keeps the previous list on failure.
-    private func loadRuns(token: String) async -> [ApifyRunSummary] {
-        guard let runs = try? await client.runs(token: token) else {
-            log.debug("could not list runs; keeping the previous list")
-            return usage?.runs ?? []
-        }
-        let shown = Set(runs.prefix(Self.shownRunCount).map(\.id))
-        let minimum = preferences.runCostUsd
-        var summaries: [ApifyRunSummary] = []
-        for run in runs {
-            let cost = run.usageTotalUsd ?? 0
-            // "Lazily, only when needed" (A2): a run nobody will see and nobody will alert
-            // on does not justify a request. It falls back to the cached name or the id.
-            let needsName = shown.contains(run.id)
-                || (preferences.notifyRun && minimum > 0 && cost >= minimum)
-            let name = needsName
-                ? await actorName(for: run.actId, token: token)
-                : (actorNames[run.actId] ?? run.actId)
-            summaries.append(
-                ApifyRunSummary(
-                    id: run.id, actorName: name, status: run.status, costUsd: cost,
-                    startedAt: run.startedAt))
-        }
-        return summaries
-    }
-
-    private func actorName(for id: String, token: String) async -> String {
-        if let cached = actorNames[id] { return cached }
-        guard let actor = try? await client.actor(token: token, id: id) else { return id }
-        actorNames[id] = actor.displayName
-        return actor.displayName
     }
 
     #if DEBUG

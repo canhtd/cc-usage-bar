@@ -14,6 +14,11 @@ nonisolated final class ApifyClient: Sendable {
         case unauthorized
         case rateLimited
         case http(Int)
+        /// The server tried to redirect. Never followed: a 3xx to another host would
+        /// re-send the Authorization header to whoever the Location points at.
+        case redirectBlocked
+        /// A request was attempted while the module is switched off.
+        case moduleDisabled
         case offline
         case transport(String)
         case decoding(String)
@@ -25,6 +30,8 @@ nonisolated final class ApifyClient: Sendable {
             case .unauthorized: return "Apify rejected the token. Check it in Settings › Apify."
             case .rateLimited: return "Apify is rate limiting this token. It will retry."
             case .http(let code): return "Apify returned HTTP \(code)."
+            case .redirectBlocked: return "Apify tried to redirect the request; refused."
+            case .moduleDisabled: return "Turn on \"Monitor Apify usage\" first."
             case .offline: return "Offline."
             case .transport(let reason): return "Could not reach Apify: \(reason)"
             case .decoding: return "Apify sent a response this version cannot read."
@@ -36,12 +43,22 @@ nonisolated final class ApifyClient: Sendable {
     static let runPageSize = 25
 
     private let session: URLSession
+    /// Refuses every redirect. Attached per task, so it also covers an injected session.
+    private let redirectBlocker = ApifyRedirectBlocker()
 
-    init(session: URLSession? = nil) {
-        if let session {
-            self.session = session
-            return
+    init() {
+        session = Self.hardenedSession()
+    }
+
+    #if DEBUG
+        /// Test-only seam for a `URLProtocol`-backed session. Not compiled into a release
+        /// build, so the shipping path can only ever use `hardenedSession()`.
+        init(testSession: URLSession) {
+            session = testSession
         }
+    #endif
+
+    private static func hardenedSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
@@ -50,7 +67,9 @@ nonisolated final class ApifyClient: Sendable {
         configuration.timeoutIntervalForRequest = Self.timeout
         configuration.timeoutIntervalForResource = Self.timeout
         configuration.waitsForConnectivity = false
-        self.session = URLSession(configuration: configuration)
+        // Belt and braces with the per-task delegate below.
+        configuration.httpShouldUsePipelining = false
+        return URLSession(configuration: configuration)
     }
 
     // MARK: - Endpoints
@@ -90,7 +109,7 @@ nonisolated final class ApifyClient: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await session.data(for: request, delegate: redirectBlocker)
         } catch let error as URLError {
             throw error.code == .notConnectedToInternet || error.code == .networkConnectionLost
                 ? ClientError.offline : ClientError.transport(error.localizedDescription)
@@ -98,13 +117,22 @@ nonisolated final class ApifyClient: Sendable {
             throw ClientError.transport(error.localizedDescription)
         }
 
-        if let http = response as? HTTPURLResponse {
-            switch http.statusCode {
-            case 200..<300: break
-            case 401, 403: throw ClientError.unauthorized
-            case 429: throw ClientError.rateLimited
-            default: throw ClientError.http(http.statusCode)
-            }
+        guard let http = response as? HTTPURLResponse else {
+            throw ClientError.transport("the response was not HTTP")
+        }
+        switch http.statusCode {
+        case 200..<300: break
+        // A refused redirect completes the task with the 3xx itself; so does a server
+        // that sends one without a usable Location. Either way there is no payload.
+        case 300..<400: throw ClientError.redirectBlocked
+        case 401, 403: throw ClientError.unauthorized
+        case 429: throw ClientError.rateLimited
+        default: throw ClientError.http(http.statusCode)
+        }
+        // The URL that actually answered, re-checked against the allowlist: a redirect the
+        // loading system resolved below us must not reach the decoder.
+        guard let finalURL = http.url, ApifyEndpoint.validate(finalURL) else {
+            throw ClientError.rejectedURL
         }
 
         do {
@@ -131,23 +159,24 @@ nonisolated final class ApifyClient: Sendable {
     }()
 }
 
-/// ISO-8601 parsing for Apify timestamps.
+/// Refuses every HTTP redirect (safety invariant S1').
 ///
-/// `ISO8601DateFormatter` is a reference type and not `Sendable`, so it cannot be held in a
-/// shared `static let` under strict concurrency. `Date.ISO8601FormatStyle` is a value type
-/// and covers both spellings Apify uses; the formatter is only built, locally, for the
-/// unlikely case of a numeric UTC offset in place of `Z`.
-nonisolated enum ApifyDateFormats {
-    static let fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
-    static let plain = Date.ISO8601FormatStyle()
-
-    static func parse(_ text: String) -> Date? {
-        if let date = try? fractional.parse(text) { return date }
-        if let date = try? plain.parse(text) { return date }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: text) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: text)
+/// `URLSession` follows 3xx responses by default, and it re-sends the request headers to
+/// wherever `Location` points. That would hand the Apify bearer token to any host a
+/// compromised or misconfigured server named -- the allowlist on the outgoing URL would
+/// have been checked, and then quietly bypassed. Returning `nil` here ends the task at the
+/// redirect response instead, which `ApifyClient` maps to `ClientError.redirectBlocked`.
+///
+/// Attached per task rather than as a session delegate, so it also covers the session a
+/// test injects.
+nonisolated final class ApifyRedirectBlocker: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
     }
 }

@@ -66,7 +66,7 @@ S4–S6 unchanged. Update `CLAUDE.md` checklist + safety greps accordingly (grep
 
 ## A2. Data (Apify REST v2, Bearer token)
 - `GET /v2/users/me/limits` → `current.monthlyUsageUsd`, `limits.maxMonthlyUsageUsd`, `monthlyUsageCycle.startAt/endAt`. Percent = current/max.
-- `GET /v2/actor-runs?desc=1&limit=25` → per run: id, actId/actorName (fetch name lazily via `GET /v2/acts/{id}` only when needed and cache), status, startedAt, `usageTotalUsd`. Only called when the expensive-run rule is enabled.
+- `GET /v2/actor-runs?desc=1&limit=25` → per run: id, actId/actorName (fetch name lazily via `GET /v2/acts/{id}` only when needed and cache), status, startedAt, `usageTotalUsd`. Called whenever the module is enabled, because the popover lists recent runs (A4); the expensive-run rule toggle controls only whether those runs also raise an alert.
 - Poll on the same RefreshScheduler cadence as Claude but as an independent task; Apify failure never degrades Claude display and vice-versa.
 - Record `monthlyUsageUsd` samples in HistoryStore (source tag `apify`) — drives sparkline + spike rule.
 

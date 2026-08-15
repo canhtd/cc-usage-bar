@@ -33,18 +33,14 @@ final class AppModel {
     // MARK: - Lifecycle
 
     func start() {
-        let scheduler = RefreshScheduler { [weak self] in
-            self?.refreshActive()
-            self?.refreshApify()
-        }
+        let scheduler = RefreshScheduler { [weak self] in self?.refreshAll() }
         scheduler.update(interval: preferences.refreshInterval)
         self.scheduler = scheduler
         // Prune first: the first fetch appends to history, and pruning afterwards would
         // race the append and could drop the sample that was just written.
         Task { [weak self] in
             await self?.history.loadAndPrune()
-            self?.refreshActive()
-            self?.refreshApify()
+            self?.refreshAll()
         }
     }
 
@@ -99,6 +95,17 @@ final class AppModel {
 
     // MARK: - Refreshing
 
+    /// Refreshes everything the user can see: the active Claude profile and, if it is
+    /// switched on, Apify. The single entry point for the timer, the wake notification,
+    /// the popover's refresh button and the menu item, so no path can update one half of
+    /// the menu bar and leave the other stale.
+    ///
+    /// The two run as independent tasks; neither awaits the other.
+    func refreshAll() {
+        refreshActive()
+        refreshApify()
+    }
+
     func refreshActive() {
         let profile = activeProfile
         Task { await refresh(profile: profile) }
@@ -128,7 +135,9 @@ final class AppModel {
         // the rule needs two, and the baseline is the oldest sample still in the window.
         let samples = history.apifySamples(
             since: Date().addingTimeInterval(-ApifyRules.spikeWindow))
-        await notifications.deliver(apify.alerts(for: usage, samples: samples))
+        let lastSpike = notifications.ledger.lastDelivery(withPrefix: ApifyRules.spikeKeyPrefix)
+        await notifications.deliver(
+            apify.alerts(for: usage, samples: samples, lastSpikeAt: lastSpike))
     }
 
     /// Called when the refresh-interval preference changes.
