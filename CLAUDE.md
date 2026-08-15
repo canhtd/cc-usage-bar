@@ -96,6 +96,12 @@ Every one of these must print nothing except the single `execve(` line in
   file under `~/Documents` raises the Documents privacy prompt; with nobody to answer it
   the run hangs in `open(2)` at 0% CPU with no error. Load fixtures from the test bundle
   (`FixtureLoader`), which lives in DerivedData.
+- **Claude Code returns cached `/usage` inside a reused process — always spawn fresh.**
+  A long-lived session answers every `/usage` with the numbers it computed the first time;
+  the menu bar sat frozen at 35%/3% for half an hour while the CLI itself reported 65%/6%.
+  `UsageSession.fetch()` therefore launches a child, captures, and tears it down again
+  every time. Do not add an "idle session" or reuse path back, however tempting the
+  ~10 seconds of launch time look.
 - **Never decode PTY bytes with a fallback encoding.** A split multi-byte sequence must be
   carried over, not reinterpreted as Latin-1.
 

@@ -3,10 +3,15 @@ import OSLog
 
 /// Drives one Claude Code PTY session and turns it into `/usage` snapshots.
 ///
-/// State machine (R4): `stopped -> waitingForBanner -> waitingForPrompt -> idle`, then per
-/// query `idle -> waitingForResult -> capturing -> idle`. Every query carries an id so a
-/// late repaint from an abandoned query can never resume the wrong continuation, and any
-/// failure tears the child down rather than leaving a half-initialised session behind.
+/// State machine (R4): `stopped -> waitingForBanner -> waitingForPrompt -> idle ->
+/// waitingForResult -> capturing -> stopped`. Every query carries an id so a late repaint
+/// from an abandoned query can never resume the wrong continuation.
+///
+/// One process per query, never reused. Claude Code answers `/usage` from a cache it
+/// builds once per process, so a session kept alive between refreshes replays the same
+/// numbers for hours -- the menu bar sat on 35%/3% while the CLI itself reported 65%/6%.
+/// Every `fetch()` therefore launches a child, captures, and tears it down again, whether
+/// the capture succeeded or failed.
 ///
 /// Startup is driven by incoming bytes; the capture half (in `UsageSession+Query.swift`)
 /// polls the rendered screen instead, because the terminal simply goes quiet once Ink has
@@ -31,14 +36,10 @@ final class UsageSession {
         /// Re-send `/usage` if no panel has appeared by now.
         static let resubmitAfter: TimeInterval = 8.0
         static let maxSubmitAttempts = 3
-        /// How often to re-dismiss a previous answer that survived the repaint.
-        static let maxPanelClearAttempts = 3
         /// The repaint must be quiet this long before its content is judged.
         static let repaintIdle: TimeInterval = 0.4
         /// ... but never wait longer than this for the repaint.
         static let repaintTimeout: TimeInterval = 3.0
-        /// A live session pins a Node process in memory; release it when unused.
-        static let idleTeardown: Duration = .seconds(900)
     }
 
     let profileID: UUID
@@ -62,7 +63,6 @@ final class UsageSession {
     var readyTask: Task<Void, Never>?
     var captureTask: Task<Void, Never>?
     var timeoutTask: Task<Void, Never>?
-    var idleTask: Task<Void, Never>?
 
     let log = Logger(subsystem: "com.danny.ccusagebar", category: "session")
 
@@ -78,25 +78,24 @@ final class UsageSession {
 
     // MARK: - Public API
 
-    /// Runs `/usage` once, launching or reusing the child process as needed.
+    /// Runs `/usage` once in a child process of its own, then tears that child down.
+    ///
+    /// Always a fresh launch: see the note on the type. F3's "never overlap two fetches for
+    /// the same profile" still holds -- a second call while one is in flight is `.busy`.
     func fetch() async throws -> UsageCapture {
         guard continuation == nil else { throw UsageSessionError.busy }
         queryID += 1
         let id = queryID
-        idleTask?.cancel()
         submitAttempts = 0
-        if process?.isRunning != true {
-            do {
-                try start()
-            } catch {
-                throw UsageSessionError.launchFailed(String(describing: error))
-            }
+        do {
+            try start()
+        } catch {
+            throw UsageSessionError.launchFailed(String(describing: error))
         }
         return try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
             self.queryIsPending = true
             self.startTimeout(for: id)
-            if self.phase == .idle { self.submitUsageCommand(for: id) }
         }
     }
 
@@ -105,7 +104,6 @@ final class UsageSession {
         timeoutTask?.cancel()
         captureTask?.cancel()
         readyTask?.cancel()
-        idleTask?.cancel()
         readyTask = nil
         captureTask = nil
         // A fetch in flight has to be resumed here, or its caller waits forever and

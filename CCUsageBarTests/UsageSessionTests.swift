@@ -14,27 +14,8 @@ struct UsageSessionTests {
         return (session, fake)
     }
 
-    /// A screen with the prompt caret, which is what tells the session it may type.
-    private let ready = "Welcome back\r\n\u{276F} \r\n? for shortcuts\r\n"
-    private let panel = """
-        Current session\r
-        \u{2588}\u{2588}\u{2588}  48% used\r
-        Resets 1:09pm (Asia/Saigon)\r
-
-        """
-
-    /// Waits for `condition`, so tests do not depend on how fast the machine is.
-    private func until(
-        _ condition: () -> Bool, timeout: Duration = .seconds(15)
-    ) async -> Bool {
-        let deadline = Date().addingTimeInterval(
-            TimeInterval(timeout.components.seconds))
-        while Date() < deadline {
-            if condition() { return true }
-            try? await Task.sleep(for: .milliseconds(25))
-        }
-        return condition()
-    }
+    private let ready = SessionScreens.ready
+    private let panel = SessionScreens.panel
 
     // MARK: - B-1
 
@@ -45,7 +26,7 @@ struct UsageSessionTests {
     func stopDuringFetchCancels() async {
         let (session, fake) = makeSession()
         let query = Task { try await session.fetch() }
-        #expect(await until { fake.isRunning })
+        #expect(await untilTrue { fake.isRunning })
 
         session.stop()
 
@@ -62,7 +43,7 @@ struct UsageSessionTests {
     func concurrentFetchIsBusy() async throws {
         let (session, fake) = makeSession()
         let query = Task { try await session.fetch() }
-        #expect(await until { fake.isRunning })
+        #expect(await untilTrue { fake.isRunning })
 
         do {
             _ = try await session.fetch()
@@ -80,7 +61,7 @@ struct UsageSessionTests {
     func exit127MeansNotInstalled() async {
         let (session, fake) = makeSession()
         let query = Task { try await session.fetch() }
-        #expect(await until { fake.isRunning })
+        #expect(await untilTrue { fake.isRunning })
 
         fake.exit(code: 127)
 
@@ -96,7 +77,7 @@ struct UsageSessionTests {
     func otherExitIsReported() async {
         let (session, fake) = makeSession()
         let query = Task { try await session.fetch() }
-        #expect(await until { fake.isRunning })
+        #expect(await untilTrue { fake.isRunning })
 
         fake.exit(code: 3)
 
@@ -113,7 +94,7 @@ struct UsageSessionTests {
     func idleExitCleansUp() async {
         let (session, fake) = makeSession()
         let query = Task { try await session.fetch() }
-        #expect(await until { fake.isRunning })
+        #expect(await untilTrue { fake.isRunning })
         session.stop()
         _ = await query.result
 
@@ -129,7 +110,7 @@ struct UsageSessionTests {
     func onboardingNeedsSetup() async {
         let (session, fake) = makeSession()
         let query = Task { try await session.fetch() }
-        #expect(await until { fake.isRunning })
+        #expect(await untilTrue { fake.isRunning })
 
         fake.emit("Welcome to Claude Code\r\nSelect login method\r\n")
 
@@ -145,7 +126,7 @@ struct UsageSessionTests {
     func commandNotFound() async {
         let (session, fake) = makeSession()
         let query = Task { try await session.fetch() }
-        #expect(await until { fake.isRunning })
+        #expect(await untilTrue { fake.isRunning })
 
         fake.emit("zsh:1: command not found: claude\r\n")
 
@@ -161,11 +142,11 @@ struct UsageSessionTests {
     func trustPromptIsAccepted() async {
         let (session, fake) = makeSession()
         let query = Task { try await session.fetch() }
-        #expect(await until { fake.isRunning })
+        #expect(await untilTrue { fake.isRunning })
 
         fake.emit("Quick safety check\r\nDo you trust the files in this folder?\r\n")
 
-        #expect(await until { fake.didWriteEnter })
+        #expect(await untilTrue { fake.didWriteEnter })
         #expect(session.phase == .waitingForPrompt)
         session.stop()
         _ = await query.result
@@ -177,18 +158,20 @@ struct UsageSessionTests {
     func capturesAPanel() async throws {
         let (session, fake) = makeSession()
         let query = Task { try await session.fetch() }
-        #expect(await until { fake.isRunning })
+        #expect(await untilTrue { fake.isRunning })
 
         fake.emit(ready)
         // Waiting for the command rather than for a duration: the screen is reset just
         // before it is typed, so a panel emitted early would be wiped.
-        #expect(await until { fake.writtenText.contains("/usage") })
+        #expect(await untilTrue { fake.writtenText.contains("/usage") })
         #expect(!fake.windowSizes.isEmpty)  // SIGWINCH nudge for a full repaint
         fake.emit(panel)
 
         let capture = try await query.value
         #expect(capture.snapshot.sections.map(\.title) == ["Current session"])
         #expect(capture.snapshot.sessionSection?.percentUsed == 48)
-        #expect(session.phase == .idle)
+        // A capture is the end of the process's life, not the start of an idle session.
+        #expect(session.phase == .stopped)
+        #expect(fake.terminateCount == 1)
     }
 }

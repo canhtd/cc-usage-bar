@@ -31,11 +31,11 @@ extension UsageSession {
 
     // MARK: - Submitting
 
-    /// Clears the input, gets the previous answer off the screen, then types the command.
+    /// Clears the input, repaints the screen, then types the command.
     ///
-    /// The repaint and the check that the old panel is really gone live in
-    /// `UsageSession+Repaint.swift`; without that check the capture poll below cannot tell
-    /// the previous answer from this one.
+    /// The SIGWINCH repaint lives in `UsageSession+Repaint.swift`; it is what makes Ink
+    /// draw the whole screen instead of the cells it thinks are dirty, so the capture poll
+    /// below judges a complete frame.
     func submitUsageCommand(for id: Int) {
         queryIsPending = false
         submitAttempts += 1
@@ -46,7 +46,7 @@ extension UsageSession {
             self.process?.write(PTYInput.escape)
             try? await Task.sleep(for: Timing.escapeDelay)
             guard self.queryID == id, self.phase == .waitingForResult else { return }
-            guard await self.clearPreviousPanel(for: id) else { return }
+            guard await self.prepareScreen(for: id) else { return }
             self.process?.write(PTYInput.usageCommand)
             try? await Task.sleep(for: Timing.submitDelay)
             guard self.queryID == id, self.phase == .waitingForResult else { return }
@@ -109,20 +109,11 @@ extension UsageSession {
             screenText: text,
             screenRows: interpreter.screen.trimmedRows,
             isRateLimited: ScreenSignals.isRateLimited(text))
-        process?.write(PTYInput.escape)  // dismiss the panel so the session can be reused
-        setPhase(.idle)
+        // Resume first, then tear down: `stop()` resumes a *pending* continuation with
+        // `.cancelled`, so the order matters. Both run without an await between them, so
+        // the child is gone before the caller's `await fetch()` returns.
         finish(.success(capture))
-        scheduleIdleTeardown()
-    }
-
-    private func scheduleIdleTeardown() {
-        idleTask?.cancel()
-        idleTask = Task { [weak self] in
-            try? await Task.sleep(for: Timing.idleTeardown)
-            guard !Task.isCancelled, let self, self.continuation == nil else { return }
-            self.log.debug("tearing down idle session")
-            self.stop()
-        }
+        stop()
     }
 
     // MARK: - Completion

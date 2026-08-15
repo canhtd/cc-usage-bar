@@ -24,6 +24,27 @@ struct UsageParserTests {
         #expect(snapshot.weekAllModelsSection?.note?.contains("promo") == true)
     }
 
+    /// Claude Code 2.1.233 dropped the per-model week section and added a "What's
+    /// contributing to your limits usage?" block whose lines also start with a percentage.
+    /// Only the two real bars may come out of it.
+    @Test("A capture from Claude Code 2.1.233 parses into its two sections")
+    func capture_2_1_233() throws {
+        let data = try FixtureLoader.data(named: "usage-2-1-233.bin")
+        let screen = FixtureLoader.renderScreen(from: data)
+        let snapshot = UsageParser.parse(screenText: screen)
+
+        #expect(snapshot.sections.map(\.title) == [
+            "Current session", "Current week (all models)",
+        ])
+        #expect(snapshot.sessionSection?.percentUsed == 65)
+        #expect(snapshot.weekAllModelsSection?.percentUsed == 6)
+        #expect(snapshot.sessionSection?.resetsText == "Resets 9:40pm (Asia/Saigon)")
+        #expect(snapshot.weekAllModelsSection?.resetsText
+            == "Resets Aug 19 at 3am (Asia/Saigon)")
+        #expect(snapshot.weekAllModelsSection?.note?.contains("promo") == true)
+        #expect(!screen.contains("\u{FFFD}"))
+    }
+
     @Test("Real captured output survives being chunked at awkward boundaries")
     func realCaptureChunking() throws {
         let data = try FixtureLoader.data(named: "usage-session-week-model.bin")
