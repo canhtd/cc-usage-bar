@@ -24,7 +24,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.delegate = self
         popover.contentViewController = NSHostingController(
             rootView: PopoverView(model: model, openSettings: openSettings))
-        popover.contentSize = NSSize(width: 380, height: 540)
+        popover.contentSize = NSSize(width: 380, height: 740)
 
         menuBuilder = StatusMenuBuilder(model: model, openSettings: openSettings)
 
@@ -56,14 +56,26 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             button.attributedTitle = NSAttributedString(string: "")
         case .percentages:
             let text = MenuBarTitle.text(for: runtime.snapshot, state: runtime.state)
-            button.attributedTitle = NSAttributedString(
-                string: " \(text)",
-                attributes: [
-                    .foregroundColor: color(for: severity),
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
-                ])
+            let title = NSMutableAttributedString(
+                string: " \(text)", attributes: attributes(for: severity))
+            // The Apify figure gets its own band: a red Apify number must not repaint the
+            // Claude one red, and vice versa.
+            if let suffix = MenuBarTitle.apifySuffix(
+                percent: model.apify.menuBarPercent, isEnabled: model.apify.isEnabled) {
+                let band = MenuBarTitle.severity(forPercent: model.apify.menuBarPercent)
+                title.append(
+                    NSAttributedString(string: suffix, attributes: attributes(for: band)))
+            }
+            button.attributedTitle = title
         }
         button.toolTip = tooltip(for: runtime)
+    }
+
+    private func attributes(for severity: MenuBarTitle.Severity) -> [NSAttributedString.Key: Any] {
+        [
+            .foregroundColor: color(for: severity),
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
+        ]
     }
 
     private func color(for severity: MenuBarTitle.Severity) -> NSColor {
@@ -81,6 +93,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             lines.append("\(section.title): \(section.percentUsed)%")
         }
         if let message = runtime.state.message { lines.append(message) }
+        if model.apify.isEnabled {
+            let apify = model.apify
+            if let usage = apify.usage, apify.state == .ready {
+                let percent = usage.percentUsed.map { " (\($0)%)" } ?? ""
+                lines.append("Apify: \(ApifyRules.money(usage.monthlyUsageUsd))\(percent)")
+            } else {
+                lines.append("Apify: \(apify.state.message ?? MenuBarTitle.placeholder)")
+            }
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -96,6 +117,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             _ = model.runtimes.keys
             _ = model.preferences.menuBarDisplay
             _ = model.preferences.activeProfileID
+            _ = model.apify.state
+            _ = model.apify.usage
+            _ = model.apify.preferences.isEnabled
         } onChange: { [weak self] in
             Task { @MainActor in
                 self?.render()

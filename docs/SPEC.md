@@ -50,3 +50,40 @@ D3. Safety grep over app sources returns nothing for: `URLSession|URLRequest|NWC
 D4. App launched from the built .app on this Mac (macOS 26.3): menu bar shows real percentages; popover shows parsed sections with bars (no `â` garbage); screenshot(s) of menu bar item + popover + Settings attached (use `screencapture`). Quitting leaves no `claude` child processes from the app (`pgrep -f` evidence).
 D5. Copy the Release .app to `/Applications/CCUsageBar.app` **replacing** the old build (old one was v1.1.1 of the original — quit it first with `pkill -x CCUsageBar` if running).
 D6. `git init` + a single initial commit (no AI attribution lines in the message).
+
+---
+
+# Addendum A — Apify usage monitor (v2.1) — APPROVED
+
+## A0. Why
+A single Apify session once burned 50% of the monthly budget unnoticed. Danny wants budget %, spike and expensive-run alerts next to the Claude numbers, in the same menu bar item.
+
+## A1. Safety model amendment (supersedes S1–S3 wording; reviewer must re-audit)
+S1' **Network is allowlisted, not forbidden.** Exactly one type, `ApifyClient` (one file), may use `URLSession`. It only builds URLs under `https://api.apify.com/v2/`; a unit test proves any other host/scheme is rejected. Ephemeral session config, no cookies, no caching, 15 s timeout. Requests happen only while the Apify module is enabled by the user. Everything else in the app remains network-free (safety grep now excludes only that file).
+S2' **Keychain is app-own only.** The Apify token lives in ONE generic-password item owned by this app (service `com.danny.ccusagebar.apify`, account = profile-independent, single). Only `ApifyTokenStore` (one file) touches Security.framework; it never queries other services/accounts. Never log, never write the token anywhere else, never include it in history/raw views.
+S3 unchanged: never read `~/.claude`, Claude credentials, or any `sk-ant*`. Apify token is entered by the user in Settings via SecureField (or pasted) — never discovered from disk/env.
+S4–S6 unchanged. Update `CLAUDE.md` checklist + safety greps accordingly (grep must whitelist exactly `ApifyClient.swift` for URLSession and `ApifyTokenStore.swift` for SecItem).
+
+## A2. Data (Apify REST v2, Bearer token)
+- `GET /v2/users/me/limits` → `current.monthlyUsageUsd`, `limits.maxMonthlyUsageUsd`, `monthlyUsageCycle.startAt/endAt`. Percent = current/max.
+- `GET /v2/actor-runs?desc=1&limit=25` → per run: id, actId/actorName (fetch name lazily via `GET /v2/acts/{id}` only when needed and cache), status, startedAt, `usageTotalUsd`. Only called when the expensive-run rule is enabled.
+- Poll on the same RefreshScheduler cadence as Claude but as an independent task; Apify failure never degrades Claude display and vice-versa.
+- Record `monthlyUsageUsd` samples in HistoryStore (source tag `apify`) — drives sparkline + spike rule.
+
+## A3. Alert rules (all pure + unit-tested; delivered via existing NotificationService; each fires once per key)
+R-A1 **Budget thresholds**: default 50/80/95 % of `maxMonthlyUsageUsd`; key = `apify|budget|<cycleStartAt>|<threshold>`.
+R-A2 **Spike**: usage increase over the trailing 60 min ≥ X % of budget (default 10 %, configurable) → notify "Apify spent $Δ in the last hour (Y % of budget)"; key = `apify|spike|<hour bucket>`. Needs ≥2 samples; tolerant to sparse history.
+R-A3 **Expensive run**: any run (running or finished) with `usageTotalUsd ≥ $X` (default $5) → notify "<actor> run cost $Y"; key = `apify|run|<runId>`; notification click opens `https://console.apify.com/actors/runs/<runId>` (only URL the app ever opens, via NSWorkspace).
+Settings › Apify tab: enable toggle, token field (masked, "Test connection" button showing account username from `/v2/users/me`), thresholds, spike %, run $ threshold, per-rule enable.
+
+## A4. UI
+- Menu bar: append ` · A 52%` when enabled (severity colours: same bands as F1). When Apify errors: ` · A —` in secondary colour.
+- Popover: new "Apify" section under the Claude ones: "$X of $Y this month" + percent, ProgressView, "Cycle resets <date> (<n> days)", sparkline (24h/7d selectable like others), then up to 3 most recent runs with cost (name, status, $), and an inline error line (invalid token → "Open Settings" link; offline → "Offline, last updated …"). When module disabled: nothing shown (no nag).
+- Settings › History: Apify $ chart alongside Claude sections.
+
+## A5. Done criteria (evidence)
+DA1 Build 0 warnings; tests pass (new suites: URL allowlist, response decoding from fixture JSON, budget/spike/run rules, token store round-trip on a throwaway keychain item that the test deletes).
+DA2 Safety greps updated in CLAUDE.md pass with the two whitelisted files; `otool -L` may now include Security + CFNetwork only.
+DA3 Live: install; Danny enters his token in Settings; "Test connection" shows his username; menu bar shows ` · A nn%`. Executor cannot do this step (no token) — hand it to the CTO with exact instructions.
+DA4 Screenshots: settings-apify.png, popover with Apify section (may use a fixture-backed debug flag in Debug build).
+DA5 One commit "Add Apify usage monitor" (no AI attribution). Bump CFBundleShortVersionString to 2.1.

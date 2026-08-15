@@ -43,12 +43,12 @@ enum DebugCapture {
         }
         await hosted(
             PopoverView(model: model, openSettings: {}),
-            size: CGSize(width: 380, height: 540), named: "popover", in: directory)
+            size: CGSize(width: 380, height: 760), named: "popover", in: directory)
         await hosted(
             RawOutputView(rows: model.activeRuntime.rawRows).padding(14),
             size: CGSize(width: 420, height: 240), named: "popover-raw-output", in: directory)
         await hosted(
-            SettingsView(model: model).padding(14), size: CGSize(width: 590, height: 500),
+            SettingsView(model: model).padding(14), size: CGSize(width: 610, height: 590),
             named: "settings-window", in: directory)
         await hosted(
             GeneralSettingsView(model: model), size: settingsSize, named: "settings-general",
@@ -56,12 +56,17 @@ enum DebugCapture {
         await hosted(
             NotificationSettingsView(model: model), size: settingsSize,
             named: "settings-notifications", in: directory)
+        // The Apify tab is the tallest one; captured at its own height so the alert rules
+        // are visible in the image rather than below the fold.
+        await hosted(
+            ApifySettingsView(model: model), size: CGSize(width: 560, height: 620),
+            named: "settings-apify", in: directory)
         await hosted(
             ProfilesSettingsView(model: model), size: settingsSize, named: "settings-profiles",
             in: directory)
         await hosted(
-            HistorySettingsView(model: model), size: settingsSize, named: "settings-history",
-            in: directory)
+            HistorySettingsView(model: model), size: CGSize(width: 560, height: 620),
+            named: "settings-history", in: directory)
         await hosted(
             AboutView(), size: settingsSize, named: "settings-about", in: directory)
         log.info("wrote UI captures to \(directory.path, privacy: .public)")

@@ -47,6 +47,20 @@ nonisolated enum MenuBarTitle {
         return severity(forPercent: worst)
     }
 
+    // MARK: - Apify suffix (A4)
+
+    /// Prefix marking the Apify figure in the status item, kept short: the menu bar is the
+    /// scarcest space on the screen, and the popover spells it out in full.
+    static let apifyPrefix = " · A "
+
+    /// ` · A 52%` when there is a percentage, ` · A —` when there is not, `nil` when the
+    /// module is switched off -- in which case nothing about Apify is drawn at all.
+    static func apifySuffix(percent: Int?, isEnabled: Bool) -> String? {
+        guard isEnabled else { return nil }
+        guard let percent else { return apifyPrefix + placeholder }
+        return apifyPrefix + "\(percent)%"
+    }
+
     /// SF Symbol reflecting the worst band, so icon-only mode still carries the signal.
     static func symbolName(for severity: Severity) -> String {
         switch severity {

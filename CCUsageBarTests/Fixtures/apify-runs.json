@@ -1,0 +1,31 @@
+{
+  "data": {
+    "total": 3,
+    "count": 3,
+    "offset": 0,
+    "desc": true,
+    "items": [
+      {
+        "id": "run-running",
+        "actId": "act-crawler",
+        "userId": "user-1",
+        "status": "RUNNING",
+        "startedAt": "2026-07-20T11:00:00.250Z",
+        "usageTotalUsd": 12.5
+      },
+      {
+        "id": "run-done",
+        "actId": "act-maps",
+        "status": "SUCCEEDED",
+        "startedAt": "2026-07-20T09:30:00.000Z",
+        "finishedAt": "2026-07-20T09:41:12.000Z",
+        "usageTotalUsd": 0.75
+      },
+      {
+        "id": "run-fresh",
+        "actId": "act-crawler",
+        "status": "READY"
+      }
+    ]
+  }
+}

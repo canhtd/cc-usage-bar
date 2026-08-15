@@ -1,0 +1,18 @@
+{
+  "data": {
+    "monthlyUsageCycle": {
+      "startAt": "2026-07-01T00:00:00.000Z",
+      "endAt": "2026-08-01T00:00:00.000Z"
+    },
+    "current": {
+      "monthlyUsageUsd": 123.456,
+      "monthlyActorComputeUnits": 401.75,
+      "monthlyExternalDataTransferGbytes": 2.5
+    },
+    "limits": {
+      "maxMonthlyUsageUsd": 200,
+      "maxMonthlyActorComputeUnits": 1000,
+      "maxActorMemoryGbytes": 16
+    }
+  }
+}

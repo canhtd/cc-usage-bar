@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Tabbed settings: General, Notifications, Profiles, History, About (F8).
+/// Tabbed settings: General, Notifications, Apify, Profiles, History, About (F8/A3).
 struct SettingsView: View {
     @Bindable var model: AppModel
 
@@ -10,6 +10,8 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             NotificationSettingsView(model: model)
                 .tabItem { Label("Notifications", systemImage: "bell") }
+            ApifySettingsView(model: model)
+                .tabItem { Label("Apify", systemImage: "cloud") }
             ProfilesSettingsView(model: model)
                 .tabItem { Label("Profiles", systemImage: "person.2") }
             HistorySettingsView(model: model)
@@ -17,6 +19,6 @@ struct SettingsView: View {
             AboutView()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 560, height: 460)
+        .frame(width: 580, height: 560)
     }
 }

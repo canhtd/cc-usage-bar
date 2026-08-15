@@ -37,6 +37,25 @@ final class HistoryStore {
         await file.append(new)
     }
 
+    /// Records one Apify poll (A2), filed under the fixed Apify pseudo-profile.
+    func recordApify(_ usage: ApifyUsage) async {
+        let sample = HistorySample(apify: usage)
+        samples.append(sample)
+        await file.append([sample])
+    }
+
+    /// Apify spend readings inside a window, as the spike rule wants them.
+    func apifySamples(since: Date) -> [ApifySample] {
+        HistoryRetention.apifySamples(samples, since: since)
+    }
+
+    /// Apify samples for charting, oldest first.
+    func apifySeries(since: Date) -> [HistorySample] {
+        HistoryRetention.series(
+            samples, profileID: HistorySample.apifyProfileID,
+            sectionKey: HistorySample.apifySectionKey, since: since)
+    }
+
     func series(profileID: UUID, sectionKey: String, since: Date) -> [HistorySample] {
         HistoryRetention.series(
             samples, profileID: profileID, sectionKey: sectionKey, since: since)

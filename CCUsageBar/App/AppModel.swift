@@ -11,6 +11,7 @@ final class AppModel {
     let preferences: AppPreferences
     let history: HistoryStore
     let notifications: NotificationService
+    let apify: ApifyRuntime
 
     private(set) var runtimes: [UUID: ProfileRuntime] = [:]
     private var scheduler: RefreshScheduler?
@@ -19,18 +20,23 @@ final class AppModel {
     init(
         preferences: AppPreferences = AppPreferences(),
         history: HistoryStore = HistoryStore(),
-        notifications: NotificationService = NotificationService()
+        notifications: NotificationService = NotificationService(),
+        apify: ApifyRuntime = ApifyRuntime()
     ) {
         self.preferences = preferences
         self.history = history
         self.notifications = notifications
+        self.apify = apify
         syncRuntimes()
     }
 
     // MARK: - Lifecycle
 
     func start() {
-        let scheduler = RefreshScheduler { [weak self] in self?.refreshActive() }
+        let scheduler = RefreshScheduler { [weak self] in
+            self?.refreshActive()
+            self?.refreshApify()
+        }
         scheduler.update(interval: preferences.refreshInterval)
         self.scheduler = scheduler
         // Prune first: the first fetch appends to history, and pruning afterwards would
@@ -38,6 +44,7 @@ final class AppModel {
         Task { [weak self] in
             await self?.history.loadAndPrune()
             self?.refreshActive()
+            self?.refreshApify()
         }
     }
 
@@ -103,6 +110,25 @@ final class AppModel {
         await history.record(snapshot, profileID: profile.id)
         await notifications.process(
             snapshot: snapshot, profile: profile, preferences: preferences)
+    }
+
+    /// Polls Apify (A2).
+    ///
+    /// A separate task from `refreshActive` on purpose: the two paths share only the
+    /// scheduler tick, so a hung PTY cannot delay the Apify figure and a slow or failing
+    /// HTTP request cannot delay the Claude one.
+    func refreshApify() {
+        Task { await refreshApifyNow() }
+    }
+
+    func refreshApifyNow() async {
+        guard let usage = await apify.refresh() else { return }
+        await history.recordApify(usage)
+        // Read the window after recording, so a first-ever sample cannot look like a spike:
+        // the rule needs two, and the baseline is the oldest sample still in the window.
+        let samples = history.apifySamples(
+            since: Date().addingTimeInterval(-ApifyRules.spikeWindow))
+        await notifications.deliver(apify.alerts(for: usage, samples: samples))
     }
 
     /// Called when the refresh-interval preference changes.

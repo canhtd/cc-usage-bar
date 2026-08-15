@@ -32,16 +32,23 @@ struct HistorySettingsView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
 
-            if points.isEmpty {
+            if points.isEmpty && apifyPoints.isEmpty {
                 ContentUnavailableView(
                     "No history yet",
                     systemImage: "chart.xyaxis.line",
                     description: Text(
                         "History is recorded after each successful refresh and kept for \(HistoryRetention.days) days."))
             } else {
-                chart
+                // Scrolls because the two charts together can be taller than the tab, and
+                // a clipped axis is worse than a scroll bar.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if !points.isEmpty { chart }
+                        if !apifyPoints.isEmpty { apifyChart }
+                    }
+                }
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
         .padding(16)
     }
@@ -65,7 +72,41 @@ struct HistorySettingsView: View {
             }
         }
         .chartLegend(position: .bottom)
-        .frame(minHeight: 260)
+        .frame(minHeight: 220)
+    }
+
+    /// Apify spend is dollars, not a percentage, so it needs its own axis rather than a
+    /// second series on the 0-100 chart above.
+    private var apifyChart: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Apify spend")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Chart(apifyPoints) { sample in
+                LineMark(
+                    x: .value("Time", sample.timestamp),
+                    y: .value("Spend", sample.amountUsd ?? 0)
+                )
+                .foregroundStyle(Color.accentColor)
+                .interpolationMethod(.monotone)
+            }
+            .chartYAxis {
+                AxisMarks { value in
+                    AxisGridLine()
+                    AxisValueLabel {
+                        if let amount = value.as(Double.self) {
+                            Text(ApifyRules.money(amount))
+                        }
+                    }
+                }
+            }
+            .frame(minHeight: 140)
+        }
+    }
+
+    private var apifyPoints: [HistorySample] {
+        guard model.apify.isEnabled else { return [] }
+        return model.history.apifySeries(since: since)
     }
 
     private var points: [HistorySample] {

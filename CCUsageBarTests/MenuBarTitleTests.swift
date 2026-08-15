@@ -67,4 +67,25 @@ struct MenuBarTitleTests {
             MenuBarTitle.text(for: snapshot(session: 100, week: 98), state: .rateLimited)
                 == "100% · 98%")
     }
+
+    // MARK: - Apify suffix (A4)
+
+    @Test("the Apify suffix is absent entirely while the module is off")
+    func apifySuffixHiddenWhenDisabled() {
+        #expect(MenuBarTitle.apifySuffix(percent: 52, isEnabled: false) == nil)
+    }
+
+    @Test("an enabled module shows its percentage, or a dash when there is not one")
+    func apifySuffix() {
+        #expect(MenuBarTitle.apifySuffix(percent: 52, isEnabled: true) == " · A 52%")
+        #expect(MenuBarTitle.apifySuffix(percent: nil, isEnabled: true) == " · A —")
+    }
+
+    @Test("the Apify figure uses the same severity bands as the Claude one")
+    func apifySeverityBands() {
+        #expect(MenuBarTitle.severity(forPercent: 69) == .normal)
+        #expect(MenuBarTitle.severity(forPercent: 70) == .warning)
+        #expect(MenuBarTitle.severity(forPercent: 90) == .critical)
+        #expect(MenuBarTitle.severity(forPercent: nil) == .unknown)
+    }
 }

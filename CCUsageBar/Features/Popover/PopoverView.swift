@@ -64,6 +64,10 @@ struct PopoverView: View {
                 } else {
                     EmptyStateView(state: runtime.state)
                 }
+                if model.apify.isEnabled {
+                    Divider()
+                    ApifySectionView(model: model, openSettings: openSettings)
+                }
                 if showRawOutput {
                     RawOutputView(rows: runtime.rawRows)
                 }
@@ -71,9 +75,16 @@ struct PopoverView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
         }
-        // Sized so the three sections Claude Code reports today fit without
-        // scrolling; more sections, or the raw disclosure, scroll as usual.
-        .frame(maxHeight: showRawOutput ? 520 : 420)
+        // Sized so the three sections Claude Code reports today fit without scrolling;
+        // more sections, or the raw disclosure, scroll as usual. The Apify block adds a
+        // budget bar, a sparkline and up to three runs, so it needs its own headroom --
+        // a recent-runs list that is always below the fold is not shown at all.
+        .frame(maxHeight: contentHeight)
+    }
+
+    private var contentHeight: CGFloat {
+        if showRawOutput { return 520 }
+        return model.apify.isEnabled ? 620 : 420
     }
 }
 

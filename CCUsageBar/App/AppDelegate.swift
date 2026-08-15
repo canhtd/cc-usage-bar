@@ -20,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
             ProcessInfo.processInfo.environment["XCTestBundlePath"] == nil
         else { return }
-        let model = AppModel()
+        let model = Self.makeModel()
         self.model = model
         statusItem = StatusItemController(model: model) { [weak self] in self?.openSettings() }
         NSApp.mainMenu = MainMenuBuilder.build(target: self, settings: #selector(openSettingsMenu))
@@ -43,6 +43,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         #endif
+    }
+
+    /// The normal model, unless the hidden Apify fixture flag asks for a canned one.
+    private static func makeModel() -> AppModel {
+        #if DEBUG
+            if CommandLine.arguments.contains(ApifyFixture.argument) {
+                return DebugFixtureModel.make()
+            }
+        #endif
+        return AppModel()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
