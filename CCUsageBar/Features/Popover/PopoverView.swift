@@ -17,7 +17,7 @@ struct PopoverView: View {
             PopoverFooter(
                 model: model, showRawOutput: $showRawOutput, openSettings: openSettings)
         }
-        .frame(width: 380)
+        .frame(width: PopoverLayout.width)
     }
 
     private var header: some View {
@@ -75,16 +75,14 @@ struct PopoverView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
         }
-        // Sized so the three sections Claude Code reports today fit without scrolling;
-        // more sections, or the raw disclosure, scroll as usual. The Apify block adds a
-        // budget bar, a sparkline and up to three runs, so it needs its own headroom --
-        // a recent-runs list that is always below the fold is not shown at all.
-        .frame(maxHeight: contentHeight)
-    }
-
-    private var contentHeight: CGFloat {
-        if showRawOutput { return 520 }
-        return model.apify.isEnabled ? 620 : 420
+        .frame(maxHeight: PopoverLayout.maxContentHeight(
+            showRawOutput: showRawOutput, apifyEnabled: model.apify.isEnabled))
+        // A `ScrollView` is greedy: on its own it swallows every point the cap above
+        // allows, which left a block of dead space under the last section whenever the
+        // content was shorter -- most visibly with the Apify block switched off. Fixing
+        // the vertical size makes it report the height of its content instead, so the
+        // cap only bites once there really is more content than fits.
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

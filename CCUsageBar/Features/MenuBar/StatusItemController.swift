@@ -10,6 +10,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let model: AppModel
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
+    private let content: PopoverHostingController
     private let openSettings: () -> Void
     private var menuBuilder: StatusMenuBuilder?
 
@@ -17,14 +18,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         self.model = model
         self.openSettings = openSettings
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        content = PopoverHostingController(
+            rootView: PopoverView(model: model, openSettings: openSettings))
         super.init()
 
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
-        popover.contentViewController = NSHostingController(
-            rootView: PopoverView(model: model, openSettings: openSettings))
-        popover.contentSize = NSSize(width: 380, height: 740)
+        popover.contentViewController = content
+        content.onSizeChange = { [weak self] in self?.reanchor() }
 
         menuBuilder = StatusMenuBuilder(model: model, openSettings: openSettings)
 
@@ -149,8 +151,26 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             popover.performClose(nil)
         } else {
             NSApp.activate(ignoringOtherApps: true)
+            // The popover must already be its final size when AppKit anchors it: a
+            // resize afterwards keeps the window's bottom-left corner, so the arrow
+            // slides down the screen instead of staying under the status item.
+            popover.contentSize = content.sizeThatFits(
+                in: NSSize(width: PopoverLayout.width, height: 10_000))
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
+    /// Puts the arrow back under the status item after the content changed height --
+    /// Apify switched off, or the raw-output disclosure opened, while the popover is up.
+    /// Re-assigning `positioningRect` is what makes `NSPopover` lay itself out again;
+    /// `button.bounds` is the same rect it was shown with, so nothing else moves.
+    private func reanchor() {
+        guard popover.isShown, let button = statusItem.button else { return }
+        Task { @MainActor [weak self] in
+            guard let self, self.popover.isShown else { return }
+            self.popover.positioningRect = button.bounds
+            self.popover.positioningRect = .zero
         }
     }
 
